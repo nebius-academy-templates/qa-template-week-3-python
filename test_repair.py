@@ -45,34 +45,24 @@ MAX_INCONCLUSIVE_RUNS = 3
 # The dialect is supplied by the client configuration, never guessed from the
 # payload: a malformed event must still be answered in the caller's format.
 ADAPTERS = ("codex", "claude", "cursor")
-ADAPTER_AUTO = "auto"
-CURSOR_EVENT_NAMES = {
-    "preToolUse",
-    "postToolUse",
-    "postToolUseFailure",
-    "beforeShellExecution",
-    "afterShellExecution",
-    "beforeMCPExecution",
-    "afterMCPExecution",
-}
 # Cursor exposes no response fields on its failure events.
 CURSOR_SILENT_EVENTS = {"postToolUseFailure", "afterShellExecution", "afterMCPExecution"}
 
-EXIT_CODE_RE = re.compile(r"^Exit code (\d+)\b", re.IGNORECASE | re.MULTILINE)
 TEST_TASKS = {
     ":api-tests:test": "api-tests",
     "api-tests:test": "api-tests",
     ":appium-tests:test": "appium-tests",
     "appium-tests:test": "appium-tests",
 }
+ACTIVE_STATES = frozenset({"claimed", "active", "running", "verified", "exhausted"})
+GRADLE_WRAPPERS = frozenset({"gradlew", "gradlew.bat"})
+SHELL_CONTROL_FRAGMENTS = ("\r", "\n", "&&", "||", ";", "|", "&", ">", "<", "`", "$(")
 INFRASTRUCTURE_MARKERS = (
     "sessionnotcreatedexception",
     "uiautomation not connected",
     "uiautomator2 server",
     "device offline",
     "no devices/emulators found",
-    "connection refused",
-    "connectexception",
     "eacces: permission denied",
     "permissionerror: [errno 13]",
     "accessdeniedexception",
@@ -218,8 +208,14 @@ def source_files() -> list[tuple[str, Path]]:
 def source_fingerprint(files: list[tuple[str, Path]]) -> str:
     digest = hashlib.sha256()
     for module, path in sorted(files, key=lambda pair: str(pair[1])):
-        stat = path.stat()
-        digest.update(f"{module}:{path}:{stat.st_mtime_ns}:{stat.st_size}\n".encode())
+        relative_path = path.relative_to(REPO_ROOT).as_posix()
+        digest.update(f"{module}:{relative_path}\0".encode())
+        try:
+            with path.open("rb") as source:
+                for chunk in iter(lambda: source.read(65536), b""):
+                    digest.update(chunk)
+        except OSError as error:
+            raise RuntimeError(f"Cannot fingerprint Allure result {path}: {error}") from error
     return digest.hexdigest()
 
 
@@ -234,14 +230,16 @@ def _label_value(result: dict[str, Any], name: str) -> str | None:
 def normalize_result(module: str, path: Path) -> dict[str, Any] | None:
     try:
         result = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
-        return None
+    except json.JSONDecodeError as error:
+        raise RuntimeError(f"Invalid Allure result JSON {path}: {error}") from error
+    except OSError as error:
+        raise RuntimeError(f"Cannot read Allure result {path}: {error}") from error
     if not isinstance(result, dict):
-        return None
+        raise RuntimeError(f"Allure result must be a JSON object: {path}")
     status = str(result.get("status", "")).lower()
     full_name = result.get("fullName") or result.get("testCaseName")
     if not isinstance(full_name, str) or "." not in full_name:
-        return None
+        raise RuntimeError(f"Allure result has no qualified test identity: {path}")
     class_name = _label_value(result, "testClass") or _label_value(result, "suite")
     method_name = _label_value(result, "testMethod")
     class_name = class_name or full_name.rsplit(".", 1)[0]
@@ -300,6 +298,7 @@ def refresh(if_changed: bool = False) -> int:
                     "claimedBy",
                     "claimedAt",
                     "runStartedAt",
+                    "junitSnapshot",
                     "outcome",
                     "reason",
                     "completedAt",
@@ -332,7 +331,13 @@ def _release_stale_claims(items: list[dict[str, Any]]) -> bool:
             and claimed_at < cutoff
         ):
             item["state"] = "pending"
-            for field in ("claimedBy", "claimedAt", "runStartedAt", "pendingNotice"):
+            for field in (
+                "claimedBy",
+                "claimedAt",
+                "runStartedAt",
+                "junitSnapshot",
+                "pendingNotice",
+            ):
                 item.pop(field, None)
             changed = True
     return changed
@@ -343,6 +348,19 @@ def claim(worker: str | None = None) -> int:
         queue = load_queue()
         items = queue.get("items", [])
         _release_stale_claims(items)
+        active = [
+            item
+            for item in items
+            if isinstance(item, dict) and item.get("state") in ACTIVE_STATES
+        ]
+        if active:
+            save_queue(queue)
+            print(
+                f"Active claim exists: {active[0].get('id', '<unknown>')}. "
+                "Release or complete it before claiming another failure.",
+                file=sys.stderr,
+            )
+            return 1
         pending = next(
             (item for item in items if isinstance(item, dict) and item.get("state") == "pending"),
             None,
@@ -402,7 +420,13 @@ def release(item_id: str) -> int:
             print(f"Queue item cannot be released from state {item.get('state')}", file=sys.stderr)
             return 1
         item["state"] = "pending"
-        for field in ("claimedBy", "claimedAt", "runStartedAt", "pendingNotice"):
+        for field in (
+            "claimedBy",
+            "claimedAt",
+            "runStartedAt",
+            "junitSnapshot",
+            "pendingNotice",
+        ):
             item.pop(field, None)
         save_queue(queue)
         print(f"{item_id}: released")
@@ -458,10 +482,28 @@ def parse_gradle_command(command: str) -> dict[str, Any]:
     modules = {TEST_TASKS[token] for token in tokens if token in TEST_TASKS}
     if not modules:
         return {"isTestCommand": False}
+    if any(fragment in command for fragment in SHELL_CONTROL_FRAGMENTS):
+        return {
+            "isTestCommand": True,
+            "error": (
+                "Use one direct Gradle invocation; shell operators, redirections, "
+                "substitutions, and multiline commands are blocked."
+            ),
+        }
+    executable = _unquote(tokens[0]).replace("\\", "/").rsplit("/", 1)[-1].lower()
+    if executable not in GRADLE_WRAPPERS:
+        return {
+            "isTestCommand": True,
+            "error": "Run the test with one direct repository Gradle wrapper invocation.",
+        }
     if len(modules) != 1:
         return {"isTestCommand": True, "error": "Run one test module at a time."}
+    tasks = [token for token in tokens if token in TEST_TASKS]
+    if len(tasks) != 1:
+        return {"isTestCommand": True, "error": "Run exactly one Gradle test task."}
     filters: list[str] = []
     rerun = any(token in {"--rerun", "--rerun-tasks"} for token in tokens)
+    consumed_values: set[int] = set()
     for index, token in enumerate(tokens):
         if token == "--tests":
             if index + 1 >= len(tokens):
@@ -470,9 +512,20 @@ def parse_gradle_command(command: str) -> dict[str, Any]:
                     "hasRerun": rerun,
                     "error": "The --tests option requires a value.",
                 }
+            consumed_values.add(index + 1)
             filters.append(_unquote(tokens[index + 1]))
         elif token.startswith("--tests="):
             filters.append(_unquote(token.removeprefix("--tests=")))
+    for index, token in enumerate(tokens[1:], start=1):
+        if index in consumed_values or token in TEST_TASKS or token == "--tests":
+            continue
+        if token.startswith("-"):
+            continue
+        return {
+            "isTestCommand": True,
+            "hasRerun": rerun,
+            "error": "Use one direct Gradle invocation with one test task.",
+        }
     if len(filters) > 1:
         return {"isTestCommand": True, "hasRerun": rerun, "error": "Use one --tests filter."}
     if not filters:
@@ -497,72 +550,74 @@ def parse_gradle_command(command: str) -> dict[str, Any]:
     }
 
 
-def _nested_values(value: Any, keys: set[str]) -> list[Any]:
-    found: list[Any] = []
-    if isinstance(value, dict):
-        for key, child in value.items():
-            if key in keys:
-                found.append(child)
-            found.extend(_nested_values(child, keys))
-    elif isinstance(value, list):
-        for child in value:
-            found.extend(_nested_values(child, keys))
-    return found
+def _tool_command(root: dict[str, Any], event_name: str, adapter: str) -> str:
+    if adapter == "cursor" and event_name in {
+        "beforeShellExecution",
+        "afterShellExecution",
+    }:
+        command = root.get("command")
+    else:
+        tool_input = root.get("tool_input")
+        command = tool_input.get("command") if isinstance(tool_input, dict) else None
+    if not isinstance(command, str) or not command:
+        raise RuntimeError(f"{adapter} hook payload has no shell command at its documented path")
+    return command
 
 
-def parse_hook_event(text: str, before: bool, adapter: str = ADAPTER_AUTO) -> dict[str, Any]:
+def _payload_text(value: Any) -> str:
+    if value is None:
+        return ""
+    return value if isinstance(value, str) else json.dumps(value, ensure_ascii=False)
+
+
+def _cursor_output(root: dict[str, Any], event_name: str) -> tuple[str, int | None]:
+    if event_name in {"postToolUseFailure", "afterShellExecutionFailure"}:
+        return _payload_text(root.get("error_message")), None
+    if event_name == "afterShellExecution":
+        return _payload_text(root.get("output")), None
+    raw = root.get("tool_output")
+    output = _payload_text(raw)
+    if not isinstance(raw, str):
+        return output, None
+    try:
+        decoded = json.loads(raw)
+    except json.JSONDecodeError:
+        return output, None
+    exit_code = decoded.get("exitCode") if isinstance(decoded, dict) else None
+    return output, exit_code if isinstance(exit_code, int) else None
+
+
+def _claude_output(root: dict[str, Any], event_name: str) -> tuple[str, int | None]:
+    if event_name == "PostToolUseFailure":
+        return _payload_text(root.get("error")), None
+    return _payload_text(root.get("tool_response")), None
+
+
+def _codex_output(root: dict[str, Any], _event_name: str) -> tuple[str, int | None]:
+    return _payload_text(root.get("tool_response")), None
+
+
+def parse_hook_event(text: str, before: bool, adapter: str) -> dict[str, Any]:
     try:
         root = json.loads(text.lstrip("\ufeff"))
     except json.JSONDecodeError as error:
         raise RuntimeError(f"Hook input is not valid JSON: {error}") from error
     if not isinstance(root, dict):
         raise RuntimeError("Hook input must be a JSON object.")
-    event_values = _nested_values(root, {"hook_event_name", "hookEventName"})
-    event_name = next((value for value in event_values if isinstance(value, str)), None)
-    event_name = event_name or ("PreToolUse" if before else "PostToolUse")
-    commands = _nested_values(root, {"command"})
-    command = next((value for value in commands if isinstance(value, str)), "")
-    output_values = _nested_values(
-        root,
-        {
-            "output",
-            "stdout",
-            "stderr",
-            "error",
-            "error_message",
-            "tool_output",
-            "toolOutput",
-            "tool_response",
-            "toolResponse",
-            "tool_result",
-        },
-    )
-    output_parts = [
-        value if isinstance(value, str) else json.dumps(value, ensure_ascii=False)
-        for value in output_values
-        if value is not None
-    ]
-    output = "\n".join(dict.fromkeys(output_parts))
-    exit_values = _nested_values(root, {"exit_code", "exitCode"})
-    exit_code = next((value for value in exit_values if isinstance(value, int)), None)
-    if exit_code is None:
-        for value in output_parts:
-            try:
-                embedded = json.loads(value)
-            except (json.JSONDecodeError, TypeError):
-                continue
-            candidates = _nested_values(embedded, {"exit_code", "exitCode"})
-            exit_code = next((item for item in candidates if isinstance(item, int)), None)
-            if exit_code is not None:
-                break
-    if exit_code is None:
-        # Codex and Cursor may serialize the code only in tool output. Claude
-        # can omit it entirely; its PostToolUseFailure event is authoritative.
-        match = EXIT_CODE_RE.search(output)
-        exit_code = int(match.group(1)) if match else None
+    event_name = root.get("hook_event_name")
+    if not isinstance(event_name, str) or not event_name:
+        raise RuntimeError("Hook payload has no top-level hook_event_name")
+    dialect = resolve_adapter(adapter, event_name)
+    command = _tool_command(root, event_name, dialect)
+    extractor = {
+        "claude": _claude_output,
+        "codex": _codex_output,
+        "cursor": _cursor_output,
+    }[dialect]
+    output, exit_code = extractor(root, event_name)
     return {
         "eventName": event_name,
-        "adapter": resolve_adapter(adapter, event_name),
+        "adapter": dialect,
         "command": command,
         "output": output,
         "exitCode": exit_code,
@@ -570,15 +625,14 @@ def parse_hook_event(text: str, before: bool, adapter: str = ADAPTER_AUTO) -> di
 
 
 def _active_item(queue: dict[str, Any]) -> dict[str, Any] | None:
-    active = {"claimed", "active", "running", "verified", "exhausted"}
-    return next(
-        (
-            item
-            for item in queue.get("items", [])
-            if isinstance(item, dict) and item.get("state") in active
-        ),
-        None,
-    )
+    active = [
+        item
+        for item in queue.get("items", [])
+        if isinstance(item, dict) and item.get("state") in ACTIVE_STATES
+    ]
+    if len(active) > 1:
+        raise RuntimeError("Repair state is invalid: more than one active queue item exists")
+    return active[0] if active else None
 
 
 def _target_matches(item: dict[str, Any], target: dict[str, str]) -> bool:
@@ -590,12 +644,32 @@ def _label(item: dict[str, Any]) -> str:
     return f"{item.get('fullName', '<unknown>')}{suffix}"
 
 
-def _read_junit_cases(module: str, started_at: datetime) -> tuple[list[ET.Element], str]:
+def _junit_snapshot(module: str) -> dict[str, str]:
+    directory = REPO_ROOT / module / "build" / "test-results" / "test"
+    if not directory.is_dir():
+        return {}
+    snapshot: dict[str, str] = {}
+    for path in directory.rglob("*.xml"):
+        stat = path.stat()
+        relative_path = path.relative_to(directory).as_posix()
+        snapshot[relative_path] = f"{stat.st_mtime_ns}:{stat.st_size}"
+    return snapshot
+
+
+def _read_junit_cases(
+    module: str,
+    previous_snapshot: dict[str, str],
+) -> tuple[list[ET.Element], str]:
     directory = REPO_ROOT / module / "build" / "test-results" / "test"
     if not directory.is_dir():
         return [], "no JUnit result directory exists"
-    cutoff = started_at.timestamp() - 1.0
-    files = [path for path in directory.rglob("*.xml") if path.stat().st_mtime >= cutoff]
+    files: list[Path] = []
+    for path in directory.rglob("*.xml"):
+        stat = path.stat()
+        relative_path = path.relative_to(directory).as_posix()
+        signature = f"{stat.st_mtime_ns}:{stat.st_size}"
+        if previous_snapshot.get(relative_path) != signature:
+            files.append(path)
     if not files:
         return [], "no fresh JUnit XML was produced"
     cases: list[ET.Element] = []
@@ -608,17 +682,28 @@ def _read_junit_cases(module: str, started_at: datetime) -> tuple[list[ET.Elemen
 
 
 def inspect_junit(item: dict[str, Any]) -> tuple[str, str]:
-    started_at = parse_iso(item.get("runStartedAt"))
-    if started_at is None:
-        return "inconclusive", "no matching before-run marker exists"
-    cases, error = _read_junit_cases(str(item["module"]), started_at)
+    previous_snapshot = item.get("junitSnapshot")
+    if not isinstance(previous_snapshot, dict):
+        return "inconclusive", "no matching before-run JUnit snapshot exists"
+    cases, error = _read_junit_cases(str(item["module"]), previous_snapshot)
     if error:
         return "inconclusive", error
-    if len(cases) != 1:
-        return "inconclusive", f"fresh JUnit XML contains {len(cases)} cases"
-    case = cases[0]
-    if case.get("classname") != item.get("className"):
-        return "inconclusive", "fresh JUnit XML belongs to another class"
+    expected_names = {
+        str(item.get("displayName", "")),
+        str(item.get("methodName", "")),
+        f"{item.get('methodName', '')}()",
+    }
+    matches = [
+        case
+        for case in cases
+        if case.get("classname") == item.get("className")
+        and case.get("name") in expected_names
+    ]
+    if not matches:
+        return "inconclusive", "no fresh targeted JUnit case was produced"
+    if len(matches) != 1:
+        return "inconclusive", f"fresh JUnit XML contains {len(matches)} targeted cases"
+    case = matches[0]
     if case.find("failure") is not None or case.find("error") is not None:
         return "failed", "the targeted JUnit case failed"
     if case.find("skipped") is not None:
@@ -632,11 +717,11 @@ def _evidence_for(module: str) -> str:
     return "the API JUnit XML and Allure request/response attachments"
 
 
-def resolve_adapter(adapter: str | None, event_name: str) -> str:
-    """Trust the configured dialect; fall back to the event name only for it."""
-    if adapter in ADAPTERS:
-        return str(adapter)
-    return "cursor" if event_name in CURSOR_EVENT_NAMES else "claude"
+def resolve_adapter(adapter: str | None, _event_name: str) -> str:
+    """Require the client configuration to name its response dialect."""
+    if adapter not in ADAPTERS:
+        raise RuntimeError("Hook adapter must be explicitly configured")
+    return str(adapter)
 
 
 def _hook_channel(adapter: str, event_name: str, before: bool) -> str:
@@ -800,8 +885,14 @@ def process_before(event: dict[str, Any]) -> tuple[str | None, str | None]:
             return finish(f"Repair is locked to {_label(item)}; a different test is blocked.")
         if not parsed.get("hasRerun"):
             return finish("Run the exact test fresh with --rerun or --rerun-tasks.")
+        if item.get("state") == "running":
+            return finish(
+                f"{_label(item)} already has a test command in progress; wait for "
+                "its POST hook before starting another run.",
+            )
         item["state"] = "running"
         item["runStartedAt"] = now_iso()
+        item["junitSnapshot"] = _junit_snapshot(str(item["module"]))
         item.setdefault("inconclusiveRuns", 0)
         save_queue(queue)
         return finish(None, allowed_reason="allowed exact fresh test")
@@ -815,7 +906,11 @@ def process_after(event: dict[str, Any]) -> str | None:
     with state_lock():
         queue = load_queue()
         item = _active_item(queue)
-        if item is None or not _target_matches(item, target):
+        if (
+            item is None
+            or item.get("state") != "running"
+            or not _target_matches(item, target)
+        ):
             return None
         state_before = str(item.get("state"))
         proof, reason = inspect_junit(item)
@@ -829,13 +924,6 @@ def process_after(event: dict[str, Any]) -> str | None:
             item.pop("pendingNotice", None)
             context = (
                 f"{_label(item)} has fresh green JUnit proof and is ready for fixed completion."
-            )
-        elif failed_event and any(marker in output for marker in INFRASTRUCTURE_MARKERS):
-            item["state"] = "active"
-            context = (
-                f"Infrastructure failure detected for {_label(item)}. "
-                "No repair attempt was consumed. Restore fake-api/Appium/device "
-                "connectivity and rerun the same exact test."
             )
         elif proof == "failed":
             attempts = int(item.get("attempts", 0)) + 1
@@ -857,6 +945,13 @@ def process_after(event: dict[str, Any]) -> str | None:
             context = (
                 f"Repair attempt {attempts}/{MAX_REPAIR_ATTEMPTS} failed for "
                 f"{_label(item)}. {instruction}"
+            )
+        elif failed_event and any(marker in output for marker in INFRASTRUCTURE_MARKERS):
+            item["state"] = "active"
+            context = (
+                f"Infrastructure failure detected for {_label(item)} without a fresh "
+                "failed target JUnit case. No repair attempt was consumed. Restore "
+                "fake-api/Appium/device connectivity and rerun the same exact test."
             )
         else:
             inconclusive_runs = int(item.get("inconclusiveRuns", 0)) + 1
@@ -881,6 +976,7 @@ def process_after(event: dict[str, Any]) -> str | None:
                 "Compile-only, cached, skipped, and zero-test runs are not green proof. "
                 f"{instruction}"
             )
+        item.pop("junitSnapshot", None)
         can_deliver = (
             _hook_channel(
                 resolve_adapter(event.get("adapter"), event["eventName"]),
@@ -906,7 +1002,7 @@ def process_after(event: dict[str, Any]) -> str | None:
     return context
 
 
-def hook_main(phase: str, adapter: str = ADAPTER_AUTO) -> int:
+def hook_main(phase: str, adapter: str) -> int:
     text = sys.stdin.read()
     before = phase == "before"
     dialect = adapter if adapter in ADAPTERS else "claude"
@@ -966,8 +1062,8 @@ def build_parser() -> argparse.ArgumentParser:
         )
         hook_parser.add_argument(
             "--adapter",
-            choices=(*ADAPTERS, ADAPTER_AUTO),
-            default=ADAPTER_AUTO,
+            choices=ADAPTERS,
+            required=True,
         )
     refresh_parser = commands.add_parser("refresh")
     refresh_parser.add_argument("--if-changed", action="store_true")
