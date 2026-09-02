@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Shared exact-test repair queue and shell guard for Codex, Claude, and Cursor."""
+"""Shared exact-test repair queue and shell guard for Codex and Claude Code."""
 
 from __future__ import annotations
 
@@ -43,9 +43,7 @@ MAX_INCONCLUSIVE_RUNS = 3
 
 # The dialect is supplied by the client configuration, never guessed from the
 # payload: a malformed event must still be answered in the caller's format.
-ADAPTERS = ("codex", "claude", "cursor")
-# Cursor exposes no response fields on its failure events.
-CURSOR_SILENT_EVENTS = {"postToolUseFailure", "afterShellExecution", "afterMCPExecution"}
+ADAPTERS = ("codex", "claude")
 
 TEST_TASKS = {
     ":api-tests:test": "api-tests",
@@ -227,7 +225,7 @@ def _label_value(result: dict[str, Any], name: str) -> str | None:
     return None
 
 
-def normalize_result(module: str, path: Path) -> dict[str, Any] | None:
+def normalize_result(module: str, path: Path) -> dict[str, Any]:
     try:
         result = json.loads(path.read_text(encoding="utf-8"))
     except json.JSONDecodeError as error:
@@ -277,8 +275,6 @@ def refresh(if_changed: bool = False) -> int:
         newest: dict[str, dict[str, Any]] = {}
         for module, path in files:
             result = normalize_result(module, path)
-            if result is None:
-                continue
             previous = newest.get(result["key"])
             if previous is None or result["stoppedAt"] > previous["stoppedAt"]:
                 newest[result["key"]] = result
@@ -569,15 +565,9 @@ def parse_gradle_command(command: str) -> dict[str, Any]:
     }
 
 
-def _tool_command(root: dict[str, Any], event_name: str, adapter: str) -> str:
-    if adapter == "cursor" and event_name in {
-        "beforeShellExecution",
-        "afterShellExecution",
-    }:
-        command = root.get("command")
-    else:
-        tool_input = root.get("tool_input")
-        command = tool_input.get("command") if isinstance(tool_input, dict) else None
+def _tool_command(root: dict[str, Any], adapter: str) -> str:
+    tool_input = root.get("tool_input")
+    command = tool_input.get("command") if isinstance(tool_input, dict) else None
     if not isinstance(command, str) or not command:
         raise RuntimeError(f"{adapter} hook payload has no shell command at its documented path")
     return command
@@ -587,23 +577,6 @@ def _payload_text(value: Any) -> str:
     if value is None:
         return ""
     return value if isinstance(value, str) else json.dumps(value, ensure_ascii=False)
-
-
-def _cursor_output(root: dict[str, Any], event_name: str) -> tuple[str, int | None]:
-    if event_name in {"postToolUseFailure", "afterShellExecutionFailure"}:
-        return _payload_text(root.get("error_message")), None
-    if event_name == "afterShellExecution":
-        return _payload_text(root.get("output")), None
-    raw = root.get("tool_output")
-    output = _payload_text(raw)
-    if not isinstance(raw, str):
-        return output, None
-    try:
-        decoded = json.loads(raw)
-    except json.JSONDecodeError:
-        return output, None
-    exit_code = decoded.get("exitCode") if isinstance(decoded, dict) else None
-    return output, exit_code if isinstance(exit_code, int) else None
 
 
 def _claude_output(root: dict[str, Any], event_name: str) -> tuple[str, int | None]:
@@ -626,12 +599,11 @@ def parse_hook_event(text: str, before: bool, adapter: str) -> dict[str, Any]:
     event_name = root.get("hook_event_name")
     if not isinstance(event_name, str) or not event_name:
         raise RuntimeError("Hook payload has no top-level hook_event_name")
-    dialect = resolve_adapter(adapter, event_name)
-    command = _tool_command(root, event_name, dialect)
+    dialect = resolve_adapter(adapter)
+    command = _tool_command(root, dialect)
     extractor = {
         "claude": _claude_output,
         "codex": _codex_output,
-        "cursor": _cursor_output,
     }[dialect]
     output, exit_code = extractor(root, event_name)
     return {
@@ -736,34 +708,20 @@ def _evidence_for(module: str) -> str:
     return "the API JUnit XML and Allure request/response attachments"
 
 
-def resolve_adapter(adapter: str | None, _event_name: str) -> str:
+def resolve_adapter(adapter: str | None) -> str:
     """Require the client configuration to name its response dialect."""
     if adapter not in ADAPTERS:
         raise RuntimeError("Hook adapter must be explicitly configured")
     return str(adapter)
 
 
-def _hook_channel(adapter: str, event_name: str, before: bool) -> str:
-    if adapter == "cursor":
-        if before:
-            return "cursor_permission"
-        return "none" if event_name in CURSOR_SILENT_EVENTS else "cursor_context"
-    # Codex and Claude share the hookSpecificOutput envelope.
-    return "claude_permission" if before else "claude_context"
-
-
 def encode_before(
-    adapter: str,
-    event_name: str,
+    _adapter: str,
+    _event_name: str,
     reason: str | None,
     notice: str | None = None,
 ) -> dict[str, Any]:
     message = " ".join(value for value in (notice, reason) if value)
-    if _hook_channel(adapter, event_name, True) == "cursor_permission":
-        result: dict[str, Any] = {"permission": "allow" if reason is None else "deny"}
-        if message:
-            result.update({"user_message": message, "agent_message": message})
-        return result
     if reason is None:
         return {}
     return {
@@ -775,13 +733,8 @@ def encode_before(
     }
 
 
-def encode_after(adapter: str, event_name: str, context: str | None) -> dict[str, Any]:
+def encode_after(_adapter: str, event_name: str, context: str | None) -> dict[str, Any]:
     if not context:
-        return {}
-    channel = _hook_channel(adapter, event_name, False)
-    if channel == "cursor_context":
-        return {"additional_context": context}
-    if channel == "none":
         return {}
     return {
         "hookSpecificOutput": {
@@ -854,22 +807,6 @@ def process_before(event: dict[str, Any]) -> tuple[str | None, str | None]:
             )
             return reason, notice
 
-        if (
-            item
-            and item.get("pendingNotice")
-            and _hook_channel(
-                resolve_adapter(event.get("adapter"), event["eventName"]),
-                event["eventName"],
-                True,
-            )
-            == "cursor_permission"
-        ):
-            notice = item.pop("pendingNotice")
-            save_queue(queue)
-            return finish(
-                "This test command was paused to deliver the previous repair result.",
-                str(notice),
-            )
         pending = [
             candidate for candidate in queue.get("items", []) if candidate.get("state") == "pending"
         ]
@@ -996,18 +933,7 @@ def process_after(event: dict[str, Any]) -> str | None:
                 f"{instruction}"
             )
         item.pop("junitSnapshot", None)
-        can_deliver = (
-            _hook_channel(
-                resolve_adapter(event.get("adapter"), event["eventName"]),
-                event["eventName"],
-                False,
-            )
-            != "none"
-        )
-        if can_deliver:
-            item.pop("pendingNotice", None)
-        else:
-            item["pendingNotice"] = context
+        item.pop("pendingNotice", None)
         save_queue(queue)
         _record_receipt(
             "after",
@@ -1024,17 +950,8 @@ def process_after(event: dict[str, Any]) -> str | None:
 def hook_main(phase: str, adapter: str) -> int:
     text = sys.stdin.read()
     before = phase == "before"
-    dialect = adapter if adapter in ADAPTERS else "claude"
-    # Until the payload is parsed the concrete event is unknown. Cursor
-    # registers one AFTER command for both postToolUse and postToolUseFailure,
-    # and the failure event accepts no response fields, so an unparsed Cursor
-    # AFTER must answer with the silent event rather than the talking one.
-    if before:
-        event_name = "preToolUse" if dialect == "cursor" else "PreToolUse"
-    elif dialect == "cursor":
-        event_name = "postToolUseFailure"
-    else:
-        event_name = "PostToolUse"
+    dialect = resolve_adapter(adapter)
+    event_name = "PreToolUse" if before else "PostToolUse"
     try:
         event = parse_hook_event(text, before, adapter)
         event_name = event["eventName"]
@@ -1053,13 +970,6 @@ def hook_main(phase: str, adapter: str) -> int:
         )
     print(json.dumps(result, ensure_ascii=False))
     return 0
-
-
-def should_skip_compatibility_hook(config_source: str) -> bool:
-    """Avoid running a Claude hook twice when Cursor imports Claude settings."""
-    return config_source == "claude" and bool(os.environ.get("CURSOR_VERSION"))
-
-
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
@@ -1074,11 +984,6 @@ def build_parser() -> argparse.ArgumentParser:
     commands = parser.add_subparsers(dest="command", required=True)
     for phase in ("before", "after"):
         hook_parser = commands.add_parser(phase)
-        hook_parser.add_argument(
-            "--config-source",
-            choices=("native", "claude"),
-            default="native",
-        )
         hook_parser.add_argument(
             "--adapter",
             choices=ADAPTERS,
@@ -1102,20 +1007,22 @@ def build_parser() -> argparse.ArgumentParser:
 
 def main() -> int:
     arguments = build_parser().parse_args()
-    configure_project_root(arguments.project_root)
-    if arguments.command in {"before", "after"}:
-        if should_skip_compatibility_hook(arguments.config_source):
-            return 0
-        return hook_main(arguments.command, arguments.adapter)
-    if arguments.command == "refresh":
-        return refresh(arguments.if_changed)
-    if arguments.command == "lock":
-        return lock(arguments.worker)
-    if arguments.command == "unlock":
-        return unlock(arguments.id)
-    if arguments.command == "complete":
-        return complete(arguments.id, arguments.outcome, arguments.reason)
-    return show()
+    try:
+        configure_project_root(arguments.project_root)
+        if arguments.command in {"before", "after"}:
+            return hook_main(arguments.command, arguments.adapter)
+        if arguments.command == "refresh":
+            return refresh(arguments.if_changed)
+        if arguments.command == "lock":
+            return lock(arguments.worker)
+        if arguments.command == "unlock":
+            return unlock(arguments.id)
+        if arguments.command == "complete":
+            return complete(arguments.id, arguments.outcome, arguments.reason)
+        return show()
+    except RuntimeError as error:
+        print(f"test-repair: {error}", file=sys.stderr)
+        return 1
 
 
 if __name__ == "__main__":

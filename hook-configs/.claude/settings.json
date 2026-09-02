@@ -10,8 +10,6 @@
             "args": [
               "${CLAUDE_PROJECT_DIR}/.agents/hooks/test_repair.py",
               "before",
-              "--config-source",
-              "claude",
               "--adapter",
               "claude"
             ],
@@ -31,8 +29,6 @@
             "args": [
               "${CLAUDE_PROJECT_DIR}/.agents/hooks/test_repair.py",
               "after",
-              "--config-source",
-              "claude",
               "--adapter",
               "claude"
             ],
@@ -52,8 +48,6 @@
             "args": [
               "${CLAUDE_PROJECT_DIR}/.agents/hooks/test_repair.py",
               "after",
-              "--config-source",
-              "claude",
               "--adapter",
               "claude"
             ],

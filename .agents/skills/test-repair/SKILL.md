@@ -133,6 +133,9 @@ python .agents/hooks/test_repair.py complete --id <id> --outcome skipped --reaso
 The complete queue and active repair state live in
 `.agent-state/test_repair.json`. PRE/POST decisions are appended to
 `.agent-state/test_repair_receipts.jsonl`.
+`test_repair.lock` is an internal, temporary file lock; use the `unlock`
+command to release a test from the repair workflow, and never delete this file
+manually.
 
 After the queue is empty, run the relevant full suite when requested. Format
 changed Kotlin with ktlint before final verification.
