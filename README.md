@@ -2,7 +2,9 @@
 
 Use `test_repair.py` to select one failed Kotlin test from Allure results and
 keep its triage state explicit. The script uses only the Python standard
-library. Do not create a virtual environment or install project dependencies.
+library. It does not require third-party packages. A virtual environment is
+optional; use one, or use `uv`, if you extend the implementation with your own
+dependencies.
 
 ## Install Python
 
@@ -38,63 +40,89 @@ python3 --version
 
 Stop if the reported version is older than 3.11.
 
-## Prepare the repositories
+## Add the script to the Kotlin repository
 
-Keep this repository and the Kotlin practice repository next to each other:
-
-```text
-course-work/
-├── AI-for-qa-stu/
-└── qa-template-week-3-python/
-```
-
-Clone them when they are not already available:
+The Kotlin practice repository already exists from the previous course
+modules. Clone this repository to obtain the Python implementation:
 
 ```bash
-git clone https://github.com/ai-qa-lab/AI-for-qa-stu.git
 git clone https://github.com/nebius-academy-templates/qa-template-week-3-python.git
 ```
 
-Run the following commands from `qa-template-week-3-python`.
+Place `test_repair.py` in the Kotlin practice repository at:
+
+```text
+AI-for-qa-stu/.agents/hooks/test_repair.py
+```
+
+Run the following commands from the root of `AI-for-qa-stu`.
 
 ## Inspect the CLI
 
 Windows PowerShell:
 
 ```powershell
-py -3.11 .\test_repair.py --help
+py -3 ".agents\hooks\test_repair.py" --help
 ```
 
 macOS or Linux:
 
 ```bash
-python3 ./test_repair.py --help
+python3 .agents/hooks/test_repair.py --help
 ```
+
+The setup is complete when `--help` lists `refresh`, `show`, `claim`,
+`release`, and `complete`.
 
 ## Process one failure
 
 Windows PowerShell:
 
 ```powershell
-py -3.11 .\test_repair.py --project-root ..\AI-for-qa-stu refresh
-py -3.11 .\test_repair.py --project-root ..\AI-for-qa-stu show
-py -3.11 .\test_repair.py --project-root ..\AI-for-qa-stu claim --worker learner
+py -3 ".agents\hooks\test_repair.py" refresh
+py -3 ".agents\hooks\test_repair.py" show
+py -3 ".agents\hooks\test_repair.py" claim --worker learner
 ```
 
 macOS or Linux:
 
 ```bash
-python3 ./test_repair.py --project-root ../AI-for-qa-stu refresh
-python3 ./test_repair.py --project-root ../AI-for-qa-stu show
-python3 ./test_repair.py --project-root ../AI-for-qa-stu claim --worker learner
+python3 .agents/hooks/test_repair.py refresh
+python3 .agents/hooks/test_repair.py show
+python3 .agents/hooks/test_repair.py claim --worker learner
 ```
+
+## Record the triage decision
+
+The script selects and claims the exact failed test. It does not diagnose the
+failure. Read the matching failure digest and record one triage outcome:
+
+- `PRODUCT_BUG`: the application or backend under test is wrong;
+- `TEST_AUTOMATION_BUG`: the test, its data, setup, or configuration is wrong;
+- `INFRASTRUCTURE_ISSUE`: the SDK, runner, emulator, device, Appium, or network
+  is unavailable or misconfigured;
+- `NEEDS_INVESTIGATION`: the available evidence does not distinguish the
+  causes yet.
+
+Record reproduction separately:
+
+- `DETERMINISTIC`: the same conditions produce the same result;
+- `FLAKY`: the result changes with the same code and conditions;
+- `NOT_VERIFIED`: reproduction has not been checked yet.
+
+`FLAKY` is not a cause or a fifth triage outcome. A flaky result may come from
+the product, test automation, or infrastructure.
 
 Use the `id` returned by `claim` after the triage decision has been reviewed:
 
-```text
-python test_repair.py --project-root <path-to-kotlin-project> release --id <id>
+```powershell
+py -3 ".agents\hooks\test_repair.py" release --id <id>
 ```
 
+On macOS or Linux, run the same command with `python3` and forward slashes.
+
 The script reads test evidence from the Kotlin project and writes generated
-queue state to `<path-to-kotlin-project>/.agent-state/`. It does not diagnose a
-failure or edit Kotlin code by itself; the coding agent performs that work.
+queue state to `.agent-state/`. It does not diagnose a failure or edit Kotlin
+code by itself; the coding agent performs that work. Commit
+`.agents/hooks/test_repair.py` to the Kotlin repository after the lesson. Do
+not commit `.agent-state/` or generated test evidence.
