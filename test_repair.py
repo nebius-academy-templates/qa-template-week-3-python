@@ -54,6 +54,24 @@ TEST_TASKS = {
     ":appium-tests:test": "appium-tests",
     "appium-tests:test": "appium-tests",
 }
+AGGREGATE_TEST_TASKS = frozenset(
+    {
+        "test",
+        ":test",
+        "check",
+        ":check",
+        "build",
+        ":build",
+        ":api-tests:check",
+        "api-tests:check",
+        ":api-tests:build",
+        "api-tests:build",
+        ":appium-tests:check",
+        "appium-tests:check",
+        ":appium-tests:build",
+        "appium-tests:build",
+    }
+)
 ACTIVE_STATES = frozenset({"locked", "active", "running", "verified", "exhausted"})
 GRADLE_WRAPPERS = frozenset({"gradlew", "gradlew.bat"})
 SHELL_CONTROL_FRAGMENTS = ("\r", "\n", "&&", "||", ";", "|", "&", ">", "<", "`", "$(")
@@ -473,14 +491,18 @@ def parse_gradle_command(command: str) -> dict[str, Any]:
             token.strip("\"'();&|")
             for token in command.split()
         }
-        is_test_command = bool(rough_tokens.intersection(TEST_TASKS))
+        is_test_command = bool(
+            rough_tokens.intersection(TEST_TASKS)
+            or rough_tokens.intersection(AGGREGATE_TEST_TASKS)
+        )
         return (
             {"isTestCommand": True, "error": parse_error}
             if is_test_command
             else {"isTestCommand": False}
         )
     modules = {TEST_TASKS[token] for token in tokens if token in TEST_TASKS}
-    if not modules:
+    aggregate_tasks = [token for token in tokens if token in AGGREGATE_TEST_TASKS]
+    if not modules and not aggregate_tasks:
         return {"isTestCommand": False}
     if any(fragment in command for fragment in SHELL_CONTROL_FRAGMENTS):
         return {
@@ -495,6 +517,14 @@ def parse_gradle_command(command: str) -> dict[str, Any]:
         return {
             "isTestCommand": True,
             "error": "Run the test with one direct repository Gradle wrapper invocation.",
+        }
+    if aggregate_tasks:
+        return {
+            "isTestCommand": True,
+            "error": (
+                "An aggregate Gradle task can run multiple tests. Run one exact "
+                "module test with --tests Class.method instead."
+            ),
         }
     if len(modules) != 1:
         return {"isTestCommand": True, "error": "Run one test module at a time."}

@@ -53,7 +53,8 @@ python .agents/hooks/test_repair.py unlock --id <id>
   `run-appium-suite` skill for platform-specific setup.
 - Run one exact method with one direct Gradle-wrapper invocation and
   `--tests Class.method --rerun` (or `--rerun-tasks`). Never use a class-wide
-  filter, shell operators, redirections, or batch repair candidates.
+  filter, aggregate `test`, `check`, or `build` tasks, shell operators,
+  redirections, or batch repair candidates.
 
 ## 3. Read evidence before editing
 
