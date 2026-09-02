@@ -94,8 +94,10 @@ python3 .agents/hooks/test_repair.py claim --worker learner
 
 ## Record the triage decision
 
-The script selects and claims the exact failed test. It does not diagnose the
-failure. Read the matching failure digest and record one triage outcome:
+The script selects and claims the exact failed test. Only one claim may be
+active in the repository; release or complete it before claiming another. The
+script does not diagnose the failure. Read the matching failure digest and
+record one triage outcome:
 
 - `PRODUCT_BUG`: the application or backend under test is wrong;
 - `TEST_AUTOMATION_BUG`: the test, its data, setup, or configuration is wrong;
