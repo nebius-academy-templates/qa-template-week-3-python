@@ -32,7 +32,7 @@ def default_project_root() -> Path:
 REPO_ROOT = default_project_root()
 STATE_DIR = REPO_ROOT / ".agent-state"
 STATE_PATH = STATE_DIR / "test_repair.json"
-STATE_MUTEX_PATH = STATE_DIR / "test_repair.mutex"
+STATE_FILE_LOCK_PATH = STATE_DIR / "test_repair.lock"
 RECEIPTS_PATH = STATE_DIR / "test_repair_receipts.jsonl"
 
 FAILED_STATUSES = {"failed", "broken"}
@@ -83,11 +83,11 @@ def resolve_project_root(value: str | Path) -> Path:
 
 
 def configure_project_root(root: Path) -> None:
-    global REPO_ROOT, STATE_DIR, STATE_PATH, STATE_MUTEX_PATH, RECEIPTS_PATH
+    global REPO_ROOT, STATE_DIR, STATE_PATH, STATE_FILE_LOCK_PATH, RECEIPTS_PATH
     REPO_ROOT = root
     STATE_DIR = root / ".agent-state"
     STATE_PATH = STATE_DIR / "test_repair.json"
-    STATE_MUTEX_PATH = STATE_DIR / "test_repair.mutex"
+    STATE_FILE_LOCK_PATH = STATE_DIR / "test_repair.lock"
     RECEIPTS_PATH = STATE_DIR / "test_repair_receipts.jsonl"
 
 
@@ -110,41 +110,41 @@ def parse_iso(value: object) -> datetime | None:
 
 
 @contextmanager
-def state_mutex(timeout_seconds: float = 10.0) -> Iterator[None]:
+def state_file_lock(timeout_seconds: float = 10.0) -> Iterator[None]:
     """Serialize repair-state mutations without third-party dependencies."""
     STATE_DIR.mkdir(parents=True, exist_ok=True)
     deadline = time.monotonic() + timeout_seconds
     while True:
         try:
             descriptor = os.open(
-                STATE_MUTEX_PATH,
+                STATE_FILE_LOCK_PATH,
                 os.O_CREAT | os.O_EXCL | os.O_WRONLY,
             )
             try:
                 os.write(descriptor, f"{os.getpid()}\n".encode())
             except OSError:
-                STATE_MUTEX_PATH.unlink(missing_ok=True)
+                STATE_FILE_LOCK_PATH.unlink(missing_ok=True)
                 raise
             finally:
                 os.close(descriptor)
             break
         except FileExistsError:
             try:
-                stale = time.time() - STATE_MUTEX_PATH.stat().st_mtime > 60
+                stale = time.time() - STATE_FILE_LOCK_PATH.stat().st_mtime > 60
             except FileNotFoundError:
                 continue
             if stale:
-                STATE_MUTEX_PATH.unlink(missing_ok=True)
+                STATE_FILE_LOCK_PATH.unlink(missing_ok=True)
                 continue
             if time.monotonic() >= deadline:
                 raise RuntimeError(
-                    f"Test-repair state file is busy: {STATE_MUTEX_PATH}"
+                    f"Test-repair state file is busy: {STATE_FILE_LOCK_PATH}"
                 ) from None
             time.sleep(0.05)
     try:
         yield
     finally:
-        STATE_MUTEX_PATH.unlink(missing_ok=True)
+        STATE_FILE_LOCK_PATH.unlink(missing_ok=True)
 
 
 def _read_json_object(path: Path) -> dict[str, Any] | None:
@@ -270,7 +270,7 @@ def normalize_result(module: str, path: Path) -> dict[str, Any] | None:
 def refresh(if_changed: bool = False) -> int:
     files = source_files()
     fingerprint = source_fingerprint(files)
-    with state_mutex():
+    with state_file_lock():
         queue = load_queue()
         if if_changed and queue.get("sourceFingerprint") == fingerprint:
             return 0
@@ -344,7 +344,7 @@ def _unlock_stale_items(items: list[dict[str, Any]]) -> bool:
 
 
 def lock(worker: str | None = None) -> int:
-    with state_mutex():
+    with state_file_lock():
         queue = load_queue()
         items = queue.get("items", [])
         _unlock_stale_items(items)
@@ -380,7 +380,7 @@ def lock(worker: str | None = None) -> int:
 
 
 def complete(item_id: str, outcome: str, reason: str | None = None) -> int:
-    with state_mutex():
+    with state_file_lock():
         queue = load_queue()
         item = next(
             (candidate for candidate in queue.get("items", []) if candidate.get("id") == item_id),
@@ -407,7 +407,7 @@ def complete(item_id: str, outcome: str, reason: str | None = None) -> int:
 
 
 def unlock(item_id: str) -> int:
-    with state_mutex():
+    with state_file_lock():
         queue = load_queue()
         item = next(
             (candidate for candidate in queue.get("items", []) if candidate.get("id") == item_id),
@@ -831,7 +831,7 @@ def process_before(event: dict[str, Any]) -> tuple[str | None, str | None]:
     parsed = parse_gradle_command(event["command"])
     if not parsed.get("isTestCommand"):
         return None, None
-    with state_mutex():
+    with state_file_lock():
         queue = load_queue()
         if _unlock_stale_items(queue.get("items", [])):
             save_queue(queue)
@@ -922,7 +922,7 @@ def process_after(event: dict[str, Any]) -> str | None:
     target = parsed.get("target")
     if not parsed.get("isTestCommand") or not isinstance(target, dict):
         return None
-    with state_mutex():
+    with state_file_lock():
         queue = load_queue()
         item = _active_item(queue)
         if (

@@ -132,9 +132,7 @@ python .agents/hooks/test_repair.py complete --id <id> --outcome skipped --reaso
 
 The complete queue and active repair state live in
 `.agent-state/test_repair.json`. PRE/POST decisions are appended to
-`.agent-state/test_repair_receipts.jsonl`. A transient `test_repair.mutex`
-file exists only while state is being changed atomically; it is unrelated to
-the repair lock and is not a separate course concept.
+`.agent-state/test_repair_receipts.jsonl`.
 
 After the queue is empty, run the relevant full suite when requested. Format
 changed Kotlin with ktlint before final verification.

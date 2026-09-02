@@ -107,7 +107,7 @@ Windows PowerShell:
 ```powershell
 python ".agents\hooks\test_repair.py" refresh
 python ".agents\hooks\test_repair.py" show
-python ".agents\hooks\test_repair.py" lock --worker learner
+python ".agents\hooks\test_repair.py" lock
 ```
 
 macOS or Linux:
@@ -115,7 +115,7 @@ macOS or Linux:
 ```bash
 python3 .agents/hooks/test_repair.py refresh
 python3 .agents/hooks/test_repair.py show
-python3 .agents/hooks/test_repair.py lock --worker learner
+python3 .agents/hooks/test_repair.py lock
 ```
 
 ## Record the triage decision
