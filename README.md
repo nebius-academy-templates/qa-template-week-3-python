@@ -19,12 +19,6 @@ Windows:
 4. Verify the installation:
 
 ```powershell
-py -3.11 --version
-```
-
-If the Python launcher is unavailable, use:
-
-```powershell
 python --version
 ```
 
@@ -40,7 +34,7 @@ python3 --version
 
 Stop if the reported version is older than 3.11.
 
-## Add the script to the Kotlin repository
+## Add the script and skill to the Kotlin repository
 
 The Kotlin practice repository already exists from the previous course
 modules. Clone this repository to obtain the Python implementation:
@@ -49,20 +43,35 @@ modules. Clone this repository to obtain the Python implementation:
 git clone https://github.com/nebius-academy-templates/qa-template-week-3-python.git
 ```
 
-Place `test_repair.py` in the Kotlin practice repository at:
+Place the supplied files in the Kotlin practice repository at:
 
 ```text
-AI-for-qa-stu/.agents/hooks/test_repair.py
+AI-for-Kotlin-practice/
+└── .agents/
+    ├── hooks/
+    │   └── test_repair.py
+    └── skills/
+        └── test-repair/
+            ├── SKILL.md
+            └── agents/openai.yaml
 ```
 
-Run the following commands from the root of `AI-for-qa-stu`.
+Add `"test-repair"` to `MIRRORED_SKILLS` in
+`scripts/sync_agent_skills.py`, then generate the Claude Code mirror:
+
+```powershell
+python scripts/sync_agent_skills.py
+python scripts/sync_agent_skills.py --check
+```
+
+Run the following commands from the root of `AI-for-Kotlin-practice`.
 
 ## Inspect the CLI
 
 Windows PowerShell:
 
 ```powershell
-py -3 ".agents\hooks\test_repair.py" --help
+python ".agents\hooks\test_repair.py" --help
 ```
 
 macOS or Linux:
@@ -71,17 +80,17 @@ macOS or Linux:
 python3 .agents/hooks/test_repair.py --help
 ```
 
-The setup is complete when `--help` lists `refresh`, `show`, `claim`,
-`release`, and `complete`.
+The setup is complete when `--help` lists `refresh`, `show`, `lock`, `unlock`,
+and `complete`, and the skill check reports five synchronized skills.
 
 ## Process one failure
 
 Windows PowerShell:
 
 ```powershell
-py -3 ".agents\hooks\test_repair.py" refresh
-py -3 ".agents\hooks\test_repair.py" show
-py -3 ".agents\hooks\test_repair.py" claim --worker learner
+python ".agents\hooks\test_repair.py" refresh
+python ".agents\hooks\test_repair.py" show
+python ".agents\hooks\test_repair.py" lock --worker learner
 ```
 
 macOS or Linux:
@@ -89,13 +98,13 @@ macOS or Linux:
 ```bash
 python3 .agents/hooks/test_repair.py refresh
 python3 .agents/hooks/test_repair.py show
-python3 .agents/hooks/test_repair.py claim --worker learner
+python3 .agents/hooks/test_repair.py lock --worker learner
 ```
 
 ## Record the triage decision
 
-The script selects and claims the exact failed test. Only one claim may be
-active in the repository; release or complete it before claiming another. The
+The script selects and locks the exact failed test. Only one repair lock may be
+active in the repository; unlock or complete it before locking another. The
 script does not diagnose the failure. Read the matching failure digest and
 record one triage outcome:
 
@@ -115,16 +124,19 @@ Record reproduction separately:
 `FLAKY` is not a cause or a fifth triage outcome. A flaky result may come from
 the product, test automation, or infrastructure.
 
-Use the `id` returned by `claim` after the triage decision has been reviewed:
+Use the `id` returned by `lock` when work is interrupted or must return to the
+queue:
 
 ```powershell
-py -3 ".agents\hooks\test_repair.py" release --id <id>
+python ".agents\hooks\test_repair.py" unlock --id <id>
 ```
 
 On macOS or Linux, run the same command with `python3` and forward slashes.
 
 The script reads test evidence from the Kotlin project and writes generated
 queue state to `.agent-state/`. It does not diagnose a failure or edit Kotlin
-code by itself; the coding agent performs that work. Commit
-`.agents/hooks/test_repair.py` to the Kotlin repository after the lesson. Do
-not commit `.agent-state/` or generated test evidence.
+code by itself; the coding agent performs that work through the `test-repair`
+skill, including the exact Gradle run and any evidence-backed test-layer fix.
+Commit the hook, canonical skill, generated Claude mirror, and the updated sync
+script to the Kotlin repository after the lesson. Do not commit `.agent-state/`
+or generated test evidence.

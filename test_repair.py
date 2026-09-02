@@ -33,12 +33,12 @@ def default_project_root() -> Path:
 REPO_ROOT = default_project_root()
 STATE_DIR = REPO_ROOT / ".agent-state"
 STATE_PATH = STATE_DIR / "test_repair.json"
-STATE_LOCK_PATH = STATE_DIR / "test_repair.lock"
+STATE_MUTEX_PATH = STATE_DIR / "test_repair.mutex"
 RECEIPTS_PATH = STATE_DIR / "test_repair_receipts.jsonl"
 
 FAILED_STATUSES = {"failed", "broken"}
 TERMINAL_STATES = {"done", "blocked", "skipped"}
-CLAIM_TTL = timedelta(hours=2)
+LOCK_TTL = timedelta(hours=2)
 MAX_REPAIR_ATTEMPTS = 3
 MAX_INCONCLUSIVE_RUNS = 3
 
@@ -54,7 +54,7 @@ TEST_TASKS = {
     ":appium-tests:test": "appium-tests",
     "appium-tests:test": "appium-tests",
 }
-ACTIVE_STATES = frozenset({"claimed", "active", "running", "verified", "exhausted"})
+ACTIVE_STATES = frozenset({"locked", "active", "running", "verified", "exhausted"})
 GRADLE_WRAPPERS = frozenset({"gradlew", "gradlew.bat"})
 SHELL_CONTROL_FRAGMENTS = ("\r", "\n", "&&", "||", ";", "|", "&", ">", "<", "`", "$(")
 INFRASTRUCTURE_MARKERS = (
@@ -83,11 +83,11 @@ def resolve_project_root(value: str | Path) -> Path:
 
 
 def configure_project_root(root: Path) -> None:
-    global REPO_ROOT, STATE_DIR, STATE_PATH, STATE_LOCK_PATH, RECEIPTS_PATH
+    global REPO_ROOT, STATE_DIR, STATE_PATH, STATE_MUTEX_PATH, RECEIPTS_PATH
     REPO_ROOT = root
     STATE_DIR = root / ".agent-state"
     STATE_PATH = STATE_DIR / "test_repair.json"
-    STATE_LOCK_PATH = STATE_DIR / "test_repair.lock"
+    STATE_MUTEX_PATH = STATE_DIR / "test_repair.mutex"
     RECEIPTS_PATH = STATE_DIR / "test_repair_receipts.jsonl"
 
 
@@ -110,41 +110,41 @@ def parse_iso(value: object) -> datetime | None:
 
 
 @contextmanager
-def state_lock(timeout_seconds: float = 10.0) -> Iterator[None]:
+def state_mutex(timeout_seconds: float = 10.0) -> Iterator[None]:
     """Serialize repair-state mutations without third-party dependencies."""
     STATE_DIR.mkdir(parents=True, exist_ok=True)
     deadline = time.monotonic() + timeout_seconds
     while True:
         try:
             descriptor = os.open(
-                STATE_LOCK_PATH,
+                STATE_MUTEX_PATH,
                 os.O_CREAT | os.O_EXCL | os.O_WRONLY,
             )
             try:
                 os.write(descriptor, f"{os.getpid()}\n".encode())
             except OSError:
-                STATE_LOCK_PATH.unlink(missing_ok=True)
+                STATE_MUTEX_PATH.unlink(missing_ok=True)
                 raise
             finally:
                 os.close(descriptor)
             break
         except FileExistsError:
             try:
-                stale = time.time() - STATE_LOCK_PATH.stat().st_mtime > 60
+                stale = time.time() - STATE_MUTEX_PATH.stat().st_mtime > 60
             except FileNotFoundError:
                 continue
             if stale:
-                STATE_LOCK_PATH.unlink(missing_ok=True)
+                STATE_MUTEX_PATH.unlink(missing_ok=True)
                 continue
             if time.monotonic() >= deadline:
                 raise RuntimeError(
-                    f"Test-repair state is locked: {STATE_LOCK_PATH}"
+                    f"Test-repair state file is busy: {STATE_MUTEX_PATH}"
                 ) from None
             time.sleep(0.05)
     try:
         yield
     finally:
-        STATE_LOCK_PATH.unlink(missing_ok=True)
+        STATE_MUTEX_PATH.unlink(missing_ok=True)
 
 
 def _read_json_object(path: Path) -> dict[str, Any] | None:
@@ -270,7 +270,7 @@ def normalize_result(module: str, path: Path) -> dict[str, Any] | None:
 def refresh(if_changed: bool = False) -> int:
     files = source_files()
     fingerprint = source_fingerprint(files)
-    with state_lock():
+    with state_mutex():
         queue = load_queue()
         if if_changed and queue.get("sourceFingerprint") == fingerprint:
             return 0
@@ -295,8 +295,8 @@ def refresh(if_changed: bool = False) -> int:
                     "attempts",
                     "inconclusiveRuns",
                     "exhaustedReason",
-                    "claimedBy",
-                    "claimedAt",
+                    "lockedBy",
+                    "lockedAt",
                     "runStartedAt",
                     "junitSnapshot",
                     "outcome",
@@ -320,20 +320,20 @@ def refresh(if_changed: bool = False) -> int:
     return 0
 
 
-def _release_stale_claims(items: list[dict[str, Any]]) -> bool:
-    cutoff = now() - CLAIM_TTL
+def _unlock_stale_items(items: list[dict[str, Any]]) -> bool:
+    cutoff = now() - LOCK_TTL
     changed = False
     for item in items:
-        claimed_at = parse_iso(item.get("claimedAt"))
+        locked_at = parse_iso(item.get("lockedAt"))
         if (
-            item.get("state") in {"claimed", "active", "running"}
-            and claimed_at
-            and claimed_at < cutoff
+            item.get("state") in {"locked", "active", "running"}
+            and locked_at
+            and locked_at < cutoff
         ):
             item["state"] = "pending"
             for field in (
-                "claimedBy",
-                "claimedAt",
+                "lockedBy",
+                "lockedAt",
                 "runStartedAt",
                 "junitSnapshot",
                 "pendingNotice",
@@ -343,11 +343,11 @@ def _release_stale_claims(items: list[dict[str, Any]]) -> bool:
     return changed
 
 
-def claim(worker: str | None = None) -> int:
-    with state_lock():
+def lock(worker: str | None = None) -> int:
+    with state_mutex():
         queue = load_queue()
         items = queue.get("items", [])
-        _release_stale_claims(items)
+        _unlock_stale_items(items)
         active = [
             item
             for item in items
@@ -356,8 +356,8 @@ def claim(worker: str | None = None) -> int:
         if active:
             save_queue(queue)
             print(
-                f"Active claim exists: {active[0].get('id', '<unknown>')}. "
-                "Release or complete it before claiming another failure.",
+                f"Repair lock is held by {active[0].get('id', '<unknown>')}. "
+                "Unlock or complete it before locking another failure.",
                 file=sys.stderr,
             )
             return 1
@@ -369,9 +369,9 @@ def claim(worker: str | None = None) -> int:
             save_queue(queue)
             print("Queue empty: no pending failed tests")
             return 0
-        pending["state"] = "claimed"
-        pending["claimedBy"] = worker or f"{socket.gethostname()}:{os.getpid()}"
-        pending["claimedAt"] = now_iso()
+        pending["state"] = "locked"
+        pending["lockedBy"] = worker or f"{socket.gethostname()}:{os.getpid()}"
+        pending["lockedAt"] = now_iso()
         pending.setdefault("attempts", 0)
         pending.setdefault("inconclusiveRuns", 0)
         save_queue(queue)
@@ -380,7 +380,7 @@ def claim(worker: str | None = None) -> int:
 
 
 def complete(item_id: str, outcome: str, reason: str | None = None) -> int:
-    with state_lock():
+    with state_mutex():
         queue = load_queue()
         item = next(
             (candidate for candidate in queue.get("items", []) if candidate.get("id") == item_id),
@@ -393,7 +393,7 @@ def complete(item_id: str, outcome: str, reason: str | None = None) -> int:
         if outcome == "fixed" and state != "verified":
             print("Fixed completion requires fresh verified JUnit proof.", file=sys.stderr)
             return 1
-        if outcome != "fixed" and state not in {"claimed", "active", "exhausted", "verified"}:
+        if outcome != "fixed" and state not in {"locked", "active", "exhausted", "verified"}:
             print(f"Queue item is not active: {item_id}", file=sys.stderr)
             return 1
         item["state"] = "done" if outcome == "fixed" else outcome
@@ -406,8 +406,8 @@ def complete(item_id: str, outcome: str, reason: str | None = None) -> int:
     return 0
 
 
-def release(item_id: str) -> int:
-    with state_lock():
+def unlock(item_id: str) -> int:
+    with state_mutex():
         queue = load_queue()
         item = next(
             (candidate for candidate in queue.get("items", []) if candidate.get("id") == item_id),
@@ -416,20 +416,20 @@ def release(item_id: str) -> int:
         if item is None:
             print(f"Unknown queue id: {item_id}", file=sys.stderr)
             return 1
-        if item.get("state") not in {"claimed", "active"}:
-            print(f"Queue item cannot be released from state {item.get('state')}", file=sys.stderr)
+        if item.get("state") not in {"locked", "active", "running"}:
+            print(f"Queue item cannot be unlocked from state {item.get('state')}", file=sys.stderr)
             return 1
         item["state"] = "pending"
         for field in (
-            "claimedBy",
-            "claimedAt",
+            "lockedBy",
+            "lockedAt",
             "runStartedAt",
             "junitSnapshot",
             "pendingNotice",
         ):
             item.pop(field, None)
         save_queue(queue)
-        print(f"{item_id}: released")
+        print(f"{item_id}: unlocked")
     return 0
 
 
@@ -812,9 +812,9 @@ def process_before(event: dict[str, Any]) -> tuple[str | None, str | None]:
     parsed = parse_gradle_command(event["command"])
     if not parsed.get("isTestCommand"):
         return None, None
-    with state_lock():
+    with state_mutex():
         queue = load_queue()
-        if _release_stale_claims(queue.get("items", [])):
+        if _unlock_stale_items(queue.get("items", [])):
             save_queue(queue)
         item = _active_item(queue)
         state_before = str(item.get("state")) if item else None
@@ -857,13 +857,13 @@ def process_before(event: dict[str, Any]) -> tuple[str | None, str | None]:
         if item is None:
             if pending:
                 return finish(
-                    "The failed-test queue has pending items. Claim the next item "
+                    "The failed-test queue has pending items. Lock the next item "
                     "before running tests.",
                 )
             return finish(None, allowed_reason="allowed final verification command")
         if item.get("state") == "verified":
             return finish(
-                f"{_label(item)} is verified; complete or release its queue item "
+                f"{_label(item)} is verified; complete or unlock its queue item "
                 "before another test run.",
             )
         if item.get("state") == "exhausted":
@@ -903,7 +903,7 @@ def process_after(event: dict[str, Any]) -> str | None:
     target = parsed.get("target")
     if not parsed.get("isTestCommand") or not isinstance(target, dict):
         return None
-    with state_lock():
+    with state_mutex():
         queue = load_queue()
         item = _active_item(queue)
         if (
@@ -1067,10 +1067,10 @@ def build_parser() -> argparse.ArgumentParser:
         )
     refresh_parser = commands.add_parser("refresh")
     refresh_parser.add_argument("--if-changed", action="store_true")
-    claim_parser = commands.add_parser("claim")
-    claim_parser.add_argument("--worker")
-    release_parser = commands.add_parser("release")
-    release_parser.add_argument("--id", required=True)
+    lock_parser = commands.add_parser("lock")
+    lock_parser.add_argument("--worker")
+    unlock_parser = commands.add_parser("unlock")
+    unlock_parser.add_argument("--id", required=True)
     complete_parser = commands.add_parser("complete")
     complete_parser.add_argument("--id", required=True)
     complete_parser.add_argument(
@@ -1090,10 +1090,10 @@ def main() -> int:
         return hook_main(arguments.command, arguments.adapter)
     if arguments.command == "refresh":
         return refresh(arguments.if_changed)
-    if arguments.command == "claim":
-        return claim(arguments.worker)
-    if arguments.command == "release":
-        return release(arguments.id)
+    if arguments.command == "lock":
+        return lock(arguments.worker)
+    if arguments.command == "unlock":
+        return unlock(arguments.id)
     if arguments.command == "complete":
         return complete(arguments.id, arguments.outcome, arguments.reason)
     return show()

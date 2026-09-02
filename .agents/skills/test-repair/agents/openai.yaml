@@ -1,0 +1,4 @@
+interface:
+  display_name: "Test Repair"
+  short_description: "Investigate and repair one failed test"
+  default_prompt: "Use $test-repair to process the next failed test and verify the result."
