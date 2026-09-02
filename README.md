@@ -64,6 +64,23 @@ python scripts/sync_agent_skills.py
 python scripts/sync_agent_skills.py --check
 ```
 
+## Enable the repair guard
+
+Copy the ready hook configuration for each coding agent used in the course:
+
+```text
+hook-configs/.codex/hooks.json     → AI-for-Kotlin-practice/.codex/hooks.json
+hook-configs/.claude/settings.json → AI-for-Kotlin-practice/.claude/settings.json
+hook-configs/.cursor/hooks.json    → AI-for-Kotlin-practice/.cursor/hooks.json
+```
+
+The Week 1 repository contains empty hook configurations, so adding the script
+alone does not enable the guard. Install the Codex or Claude Code configuration
+before the hook practice; install the Cursor configuration only when Cursor is
+used. If a target file already contains custom hooks, merge the supplied hook
+entries instead of replacing them. Restart the coding-agent session after the
+configuration changes.
+
 Run the following commands from the root of `AI-for-Kotlin-practice`.
 
 ## Inspect the CLI

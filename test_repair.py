@@ -7,7 +7,6 @@ import argparse
 import hashlib
 import json
 import os
-import re
 import shlex
 import socket
 import sys
@@ -54,24 +53,7 @@ TEST_TASKS = {
     ":appium-tests:test": "appium-tests",
     "appium-tests:test": "appium-tests",
 }
-AGGREGATE_TEST_TASKS = frozenset(
-    {
-        "test",
-        ":test",
-        "check",
-        ":check",
-        "build",
-        ":build",
-        ":api-tests:check",
-        "api-tests:check",
-        ":api-tests:build",
-        "api-tests:build",
-        ":appium-tests:check",
-        "appium-tests:check",
-        ":appium-tests:build",
-        "appium-tests:build",
-    }
-)
+AGGREGATE_TEST_TASK_NAMES = frozenset({"test", "check", "build"})
 ACTIVE_STATES = frozenset({"locked", "active", "running", "verified", "exhausted"})
 GRADLE_WRAPPERS = frozenset({"gradlew", "gradlew.bat"})
 SHELL_CONTROL_FRAGMENTS = ("\r", "\n", "&&", "||", ";", "|", "&", ">", "<", "`", "$(")
@@ -484,6 +466,12 @@ def _command_tokens(command: str) -> tuple[list[str], str | None]:
     return tokens, None
 
 
+def _is_test_running_task(token: str) -> bool:
+    """Return whether a Gradle task can transitively execute tests."""
+    task_name = _unquote(token).rstrip(":").rsplit(":", 1)[-1]
+    return task_name in AGGREGATE_TEST_TASK_NAMES
+
+
 def parse_gradle_command(command: str) -> dict[str, Any]:
     tokens, parse_error = _command_tokens(command)
     if parse_error:
@@ -491,17 +479,18 @@ def parse_gradle_command(command: str) -> dict[str, Any]:
             token.strip("\"'();&|")
             for token in command.split()
         }
-        is_test_command = bool(
-            rough_tokens.intersection(TEST_TASKS)
-            or rough_tokens.intersection(AGGREGATE_TEST_TASKS)
-        )
+        is_test_command = any(_is_test_running_task(token) for token in rough_tokens)
         return (
             {"isTestCommand": True, "error": parse_error}
             if is_test_command
             else {"isTestCommand": False}
         )
     modules = {TEST_TASKS[token] for token in tokens if token in TEST_TASKS}
-    aggregate_tasks = [token for token in tokens if token in AGGREGATE_TEST_TASKS]
+    aggregate_tasks = [
+        token
+        for token in tokens
+        if token not in TEST_TASKS and _is_test_running_task(token)
+    ]
     if not modules and not aggregate_tasks:
         return {"isTestCommand": False}
     if any(fragment in command for fragment in SHELL_CONTROL_FRAGMENTS):

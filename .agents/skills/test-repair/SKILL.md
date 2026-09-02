@@ -55,6 +55,10 @@ python .agents/hooks/test_repair.py unlock --id <id>
   `--tests Class.method --rerun` (or `--rerun-tasks`). Never use a class-wide
   filter, aggregate `test`, `check`, or `build` tasks, shell operators,
   redirections, or batch repair candidates.
+- If compilation or test reporting must be restored before a rerun, use a
+  non-test task such as `:api-tests:compileTestKotlin`,
+  `:appium-tests:compileTestKotlin`, or `assemble`. Do not use `build` or
+  `check` while the repair queue is active.
 
 ## 3. Read evidence before editing
 

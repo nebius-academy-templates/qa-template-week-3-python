@@ -1,0 +1,67 @@
+{
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "Bash|PowerShell",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python",
+            "args": [
+              "${CLAUDE_PROJECT_DIR}/.agents/hooks/test_repair.py",
+              "before",
+              "--config-source",
+              "claude",
+              "--adapter",
+              "claude"
+            ],
+            "timeout": 10,
+            "statusMessage": "Checking the exact-test repair lock"
+          }
+        ]
+      }
+    ],
+    "PostToolUse": [
+      {
+        "matcher": "Bash|PowerShell",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python",
+            "args": [
+              "${CLAUDE_PROJECT_DIR}/.agents/hooks/test_repair.py",
+              "after",
+              "--config-source",
+              "claude",
+              "--adapter",
+              "claude"
+            ],
+            "timeout": 10,
+            "statusMessage": "Recording targeted test evidence"
+          }
+        ]
+      }
+    ],
+    "PostToolUseFailure": [
+      {
+        "matcher": "Bash|PowerShell",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python",
+            "args": [
+              "${CLAUDE_PROJECT_DIR}/.agents/hooks/test_repair.py",
+              "after",
+              "--config-source",
+              "claude",
+              "--adapter",
+              "claude"
+            ],
+            "timeout": 10,
+            "statusMessage": "Recording failed targeted test evidence"
+          }
+        ]
+      }
+    ]
+  }
+}
