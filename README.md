@@ -63,6 +63,18 @@ cp -R ../qa-template-week-3-python/.agents/skills/test-repair .agents/skills/tes
 cp ../qa-template-week-3-python/api-tests/PreparedApiFailureTest.kt api-tests/src/test/kotlin/tests/PreparedApiFailureTest.kt
 ```
 
+Install the skill in the directory used by your coding agent:
+
+- **Codex:** copy the complete `.agents/skills/test-repair/` directory to
+  `AI-for-Kotlin-practice/.agents/skills/test-repair/`.
+- **Claude Code:** copy `.agents/skills/test-repair/SKILL.md` to
+  `AI-for-Kotlin-practice/.claude/skills/test-repair/SKILL.md`.
+- If you use both coding agents, install both copies.
+
+Create any missing directories before copying the skill, then restart the
+coding-agent session. You do not need to edit `MIRRORED_SKILLS` or run the skill
+sync script.
+
 ## Apply the Appium failure-digest hotfix
 
 Before the mobile triage exercise, apply the compatibility patch to the
