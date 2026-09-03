@@ -99,6 +99,14 @@ hook-configs/.codex/hooks.json     → AI-for-Kotlin-practice/.codex/hooks.json
 hook-configs/.claude/settings.json → AI-for-Kotlin-practice/.claude/settings.json
 ```
 
+Both configurations select the Python interpreter when the hook runs: `python3`
+when it exists, `python` otherwise. A Windows install from python.org provides
+`python` and no `python3`; a macOS or Linux install usually provides only
+`python3`. No per-platform edit is required.
+
+The Claude Code configuration runs its command through bash. On Windows that is
+the Git Bash shipped with Git for Windows, which the course already requires.
+
 The Week 1 repository contains empty hook configurations, so adding the script
 alone does not enable the guard. Install the Codex or Claude Code configuration
 before the hook practice. If a target file already contains custom hooks, merge

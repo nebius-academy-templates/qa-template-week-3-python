@@ -6,13 +6,8 @@
         "hooks": [
           {
             "type": "command",
-            "command": "python",
-            "args": [
-              "${CLAUDE_PROJECT_DIR}/.agents/hooks/test_repair.py",
-              "before",
-              "--adapter",
-              "claude"
-            ],
+            "shell": "bash",
+            "command": "if command -v python3 >/dev/null 2>&1; then PY=python3; else PY=python; fi; \"$PY\" \"$CLAUDE_PROJECT_DIR/.agents/hooks/test_repair.py\" before --adapter claude",
             "timeout": 10,
             "statusMessage": "Checking the exact-test repair lock"
           }
@@ -25,13 +20,8 @@
         "hooks": [
           {
             "type": "command",
-            "command": "python",
-            "args": [
-              "${CLAUDE_PROJECT_DIR}/.agents/hooks/test_repair.py",
-              "after",
-              "--adapter",
-              "claude"
-            ],
+            "shell": "bash",
+            "command": "if command -v python3 >/dev/null 2>&1; then PY=python3; else PY=python; fi; \"$PY\" \"$CLAUDE_PROJECT_DIR/.agents/hooks/test_repair.py\" after --adapter claude",
             "timeout": 10,
             "statusMessage": "Recording targeted test evidence"
           }
@@ -44,13 +34,8 @@
         "hooks": [
           {
             "type": "command",
-            "command": "python",
-            "args": [
-              "${CLAUDE_PROJECT_DIR}/.agents/hooks/test_repair.py",
-              "after",
-              "--adapter",
-              "claude"
-            ],
+            "shell": "bash",
+            "command": "if command -v python3 >/dev/null 2>&1; then PY=python3; else PY=python; fi; \"$PY\" \"$CLAUDE_PROJECT_DIR/.agents/hooks/test_repair.py\" after --adapter claude",
             "timeout": 10,
             "statusMessage": "Recording failed targeted test evidence"
           }

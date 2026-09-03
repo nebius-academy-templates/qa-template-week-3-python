@@ -245,7 +245,8 @@ def normalize_result(module: str, path: Path) -> dict[str, Any]:
     stopped_at = int(result.get("stop") or path.stat().st_mtime_ns // 1_000_000)
     details = result.get("statusDetails") or result.get("error") or {}
     details = details if isinstance(details, dict) else {}
-    message_lines = str(details.get("message") or "").splitlines()
+    raw_message = str(details.get("message") or "")
+    message_lines = [line for line in raw_message.splitlines() if line.strip()]
     key = f"{module}:{full_name}"
     allure_id = _label_value(result, "AS_ID") or _label_value(result, "allureId")
     return {
