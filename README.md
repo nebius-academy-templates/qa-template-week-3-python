@@ -37,10 +37,30 @@ Stop if the reported version is older than 3.11.
 ## Add the script and skill to the Kotlin repository
 
 The Kotlin practice repository already exists from the previous course
-modules. Clone this repository to obtain the Python implementation:
+modules. From the directory that contains it, clone this repository and copy
+the workflow plus the prepared API failure.
+
+Windows PowerShell:
+
+```powershell
+git clone https://github.com/nebius-academy-templates/qa-template-week-3-python.git
+Set-Location AI-for-Kotlin-practice
+New-Item -ItemType Directory -Force ".agents\hooks" | Out-Null
+New-Item -ItemType Directory -Force ".agents\skills" | Out-Null
+Copy-Item "..\qa-template-week-3-python\test_repair.py" ".agents\hooks\test_repair.py"
+Copy-Item -Recurse -Force "..\qa-template-week-3-python\.agents\skills\test-repair" ".agents\skills\test-repair"
+Copy-Item "..\qa-template-week-3-python\api-tests\PreparedApiFailureTest.kt" "api-tests\src\test\kotlin\tests\PreparedApiFailureTest.kt"
+```
+
+macOS or Linux:
 
 ```bash
 git clone https://github.com/nebius-academy-templates/qa-template-week-3-python.git
+cd AI-for-Kotlin-practice
+mkdir -p .agents/hooks .agents/skills
+cp ../qa-template-week-3-python/test_repair.py .agents/hooks/test_repair.py
+cp -R ../qa-template-week-3-python/.agents/skills/test-repair .agents/skills/test-repair
+cp ../qa-template-week-3-python/api-tests/PreparedApiFailureTest.kt api-tests/src/test/kotlin/tests/PreparedApiFailureTest.kt
 ```
 
 ## Apply the Appium failure-digest hotfix
@@ -50,26 +70,25 @@ existing Kotlin practice checkout. Do not clone the Kotlin repository again.
 Follow [`hotfixes/README.md`](hotfixes/README.md) and verify the dedicated
 formatter tests before processing a mobile failure.
 
-Place the supplied files in the Kotlin practice repository at:
+The copied files have this layout:
 
 ```text
 AI-for-Kotlin-practice/
-└── .agents/
+├── .agents/
     ├── hooks/
     │   └── test_repair.py
     └── skills/
         └── test-repair/
             ├── SKILL.md
             └── agents/openai.yaml
+└── api-tests/src/test/kotlin/tests/
+    └── PreparedApiFailureTest.kt
 ```
 
-Add `"test-repair"` to `MIRRORED_SKILLS` in
-`scripts/sync_agent_skills.py`, then generate the Claude Code mirror:
-
-```powershell
-python scripts/sync_agent_skills.py
-python scripts/sync_agent_skills.py --check
-```
+`PreparedApiFailureTest` contains one intentional assertion defect and
+produces a small JUnit failure plus Allure request and response attachments for
+the triage exercise. Remove the copied test after the exercise; do not commit
+it to the Kotlin repository.
 
 ## Enable the repair guard
 
@@ -103,7 +122,7 @@ python3 .agents/hooks/test_repair.py --help
 ```
 
 The setup is complete when `--help` lists `refresh`, `show`, `lock`, `unlock`,
-and `complete`, and the skill check reports five synchronized skills.
+and `complete`.
 
 ## Process one failure
 
@@ -159,6 +178,6 @@ The script reads test evidence from the Kotlin project and writes generated
 queue state to `.agent-state/`. It does not diagnose a failure or edit Kotlin
 code by itself; the coding agent performs that work through the `test-repair`
 skill, including the exact Gradle run and any evidence-backed test-layer fix.
-Commit the hook, canonical skill, generated Claude mirror, and the updated sync
-script to the Kotlin repository after the lesson. Do not commit `.agent-state/`
-or generated test evidence.
+Commit the hook and canonical skill to the Kotlin repository after the lesson.
+Do not commit `.agent-state/`, the prepared failure test, or generated test
+evidence.
