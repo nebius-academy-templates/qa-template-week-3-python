@@ -43,6 +43,13 @@ modules. Clone this repository to obtain the Python implementation:
 git clone https://github.com/nebius-academy-templates/qa-template-week-3-python.git
 ```
 
+## Apply the Appium failure-digest hotfix
+
+Before the mobile triage exercise, apply the compatibility patch to the
+existing Kotlin practice checkout. Do not clone the Kotlin repository again.
+Follow [`hotfixes/README.md`](hotfixes/README.md) and verify the dedicated
+formatter tests before processing a mobile failure.
+
 Place the supplied files in the Kotlin practice repository at:
 
 ```text
