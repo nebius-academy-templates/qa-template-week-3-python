@@ -12,7 +12,7 @@ import rule.ApiTestCase
 class PreparedApiFailureTest : ApiTestCase() {
     @Test
     @DisplayName("Order history returns a successful response")
-    @AllureId("2999")
+    @AllureId("2006")
     fun testOrderHistoryReturnsSuccessfulStatus() {
         val token = obtainToken()
 
