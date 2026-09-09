@@ -12,6 +12,7 @@ import socket
 import sys
 import time
 import xml.etree.ElementTree as ET
+from collections import deque
 from collections.abc import Iterator
 from contextlib import contextmanager
 from datetime import UTC, datetime, timedelta
@@ -430,17 +431,58 @@ def unlock(item_id: str) -> int:
     return 0
 
 
-def show() -> int:
+def _show_receipts(count: int) -> None:
+    try:
+        with RECEIPTS_PATH.open(encoding="utf-8") as receipts:
+            lines = deque((line for line in receipts if line.strip()), maxlen=count)
+    except FileNotFoundError:
+        lines = deque()
+    except (OSError, UnicodeError) as error:
+        raise RuntimeError(f"Cannot read {RECEIPTS_PATH}: {error}") from error
+    if not lines:
+        print("No receipts recorded")
+        return
+
+    rows = []
+    for line in lines:
+        try:
+            receipt = json.loads(line)
+        except json.JSONDecodeError as error:
+            raise RuntimeError(f"Invalid JSON in {RECEIPTS_PATH}: {error}") from error
+        if not isinstance(receipt, dict):
+            raise RuntimeError(f"Expected a receipt object in {RECEIPTS_PATH}")
+        before = receipt.get("stateBefore") or ""
+        after = receipt.get("stateAfter") or ""
+        attempts = receipt.get("attempts")
+        rows.append((
+            str(receipt.get("decision") or ""),
+            f"{before} -> {after}" if before or after else "",
+            str(attempts) if attempts is not None else "",
+            str(receipt.get("proof") or ""),
+        ))
+
+    headers = ("decision", "transition", "attempts", "proof")
+    widths = [max(len(row[i]) for row in [headers, *rows]) for i in range(len(headers))]
+    for row in [headers, tuple("-" * width for width in widths), *rows]:
+        print("  ".join(
+            value.rjust(width) if i == 2 else value.ljust(width)
+            for i, (value, width) in enumerate(zip(row, widths))
+        ).rstrip())
+
+
+def show(receipts: int | None = None) -> int:
     queue = load_queue()
     items = queue.get("items", [])
     if not items:
         print("Queue empty")
-        return 0
     for item in items:
         print(
             f"{item['id']}  {item.get('state', 'pending'):10}  "
             f"{item['module']:12}  {item['fullName']}"
         )
+    if receipts is not None:
+        print()
+        _show_receipts(receipts)
     return 0
 
 
@@ -971,6 +1013,18 @@ def hook_main(phase: str, adapter: str) -> int:
         )
     print(json.dumps(result, ensure_ascii=False))
     return 0
+
+
+def positive_int(value: str) -> int:
+    try:
+        count = int(value)
+    except ValueError as error:
+        raise argparse.ArgumentTypeError("must be a positive integer") from error
+    if count <= 0:
+        raise argparse.ArgumentTypeError("must be a positive integer")
+    return count
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
@@ -1002,7 +1056,13 @@ def build_parser() -> argparse.ArgumentParser:
         "--outcome", choices=("fixed", "blocked", "skipped"), required=True
     )
     complete_parser.add_argument("--reason")
-    commands.add_parser("show")
+    show_parser = commands.add_parser("show")
+    show_parser.add_argument(
+        "--receipts",
+        type=positive_int,
+        metavar="N",
+        help="also show the last N receipts as a table (read-only)",
+    )
     return parser
 
 
@@ -1020,7 +1080,7 @@ def main() -> int:
             return unlock(arguments.id)
         if arguments.command == "complete":
             return complete(arguments.id, arguments.outcome, arguments.reason)
-        return show()
+        return show(arguments.receipts)
     except RuntimeError as error:
         print(f"test-repair: {error}", file=sys.stderr)
         return 1

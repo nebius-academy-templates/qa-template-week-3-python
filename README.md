@@ -162,6 +162,28 @@ python3 .agents/hooks/test_repair.py show
 python3 .agents/hooks/test_repair.py lock
 ```
 
+## Inspect hook decisions
+
+Show the queue and the last three hook receipts as a compact table:
+
+Windows PowerShell:
+
+```powershell
+python .agents/hooks/test_repair.py show --receipts 3
+```
+
+macOS or Linux:
+
+```bash
+python3 .agents/hooks/test_repair.py show --receipts 3
+```
+
+The table shows `decision`, `transition`, `attempts`, and `proof` from
+`.agent-state/test_repair_receipts.jsonl`, in recorded order. Replace `3` with
+another positive count. The receipts are the latest entries for the project,
+not filtered by queue item. `show` is read-only: it does not recover expired
+locks, change counters, or run tests. Without `--receipts`, its output is unchanged.
+
 ## Record the triage decision
 
 The script selects and locks the exact failed test. Only one repair lock may be
