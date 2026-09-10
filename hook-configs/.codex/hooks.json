@@ -8,7 +8,7 @@
           {
             "type": "command",
             "command": "python3 \"$(git rev-parse --show-toplevel)/.agents/hooks/test_repair.py\" before --adapter codex",
-            "commandWindows": "powershell -NoProfile -Command \"$root = git rev-parse --show-toplevel; & python (Join-Path $root '.agents\\hooks\\test_repair.py') before --adapter codex\"",
+            "commandWindows": "powershell -NoProfile -Command \"`$root = git rev-parse --show-toplevel; & python (Join-Path `$root '.agents\\hooks\\test_repair.py') before --adapter codex\"",
             "timeout": 10,
             "statusMessage": "Checking the exact-test repair lock"
           }
@@ -22,7 +22,7 @@
           {
             "type": "command",
             "command": "python3 \"$(git rev-parse --show-toplevel)/.agents/hooks/test_repair.py\" after --adapter codex",
-            "commandWindows": "powershell -NoProfile -Command \"$root = git rev-parse --show-toplevel; & python (Join-Path $root '.agents\\hooks\\test_repair.py') after --adapter codex\"",
+            "commandWindows": "powershell -NoProfile -Command \"`$root = git rev-parse --show-toplevel; & python (Join-Path `$root '.agents\\hooks\\test_repair.py') after --adapter codex\"",
             "timeout": 10,
             "statusMessage": "Recording targeted test evidence"
           }
