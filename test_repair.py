@@ -466,7 +466,7 @@ def _show_receipts(count: int) -> None:
     for row in [headers, tuple("-" * width for width in widths), *rows]:
         print("  ".join(
             value.rjust(width) if i == 2 else value.ljust(width)
-            for i, (value, width) in enumerate(zip(row, widths))
+            for i, (value, width) in enumerate(zip(row, widths, strict=True))
         ).rstrip())
 
 
