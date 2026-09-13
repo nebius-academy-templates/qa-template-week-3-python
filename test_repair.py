@@ -290,65 +290,41 @@ def refresh(if_changed: bool = False) -> int:
             ):
                 newest[result["key"]] = result
 
-        existing = {item.get("key"): item for item in queue.get("items", [])}
-        items = [
-            item
-            for item in existing.values()
-            if item.get("state") in ACTIVE_STATES
-            or (
-                item.get("state") == "pending"
-                and (int(item.get("attempts", 0)) > 0 or int(item.get("inconclusiveRuns", 0)) > 0)
+        existing = {item["key"]: item for item in queue.get("items", [])}
+        items = []
+        for key in existing.keys() | newest.keys():
+            previous = existing.get(key, {})
+            result = newest.get(key)
+            keep_state = previous.get("state") in ACTIVE_STATES or (
+                previous.get("state") == "pending"
+                and (
+                    int(previous.get("attempts", 0)) > 0
+                    or int(previous.get("inconclusiveRuns", 0)) > 0
+                )
             )
-        ]
-        for item in items:
-            result = newest.get(item["key"])
-            if result is not None and result["stoppedAt"] >= item["stoppedAt"]:
-                if (
-                    item.get("state") == "verified"
-                    and result["status"] in FAILED_STATUSES
-                    and (result["resultUuid"], result["stoppedAt"], result["status"])
-                    != (item["resultUuid"], item["stoppedAt"], item["status"])
-                ):
-                    item["state"] = "active"
-                allure_id = result.get("allureId") or item.get("allureId")
-                item.update(result)
-                item["allureId"] = allure_id
-        retained_keys = {item["key"] for item in items}
-        for result in newest.values():
-            if result["key"] in retained_keys:
+            if not keep_state and (
+                result is None or result["status"] not in FAILED_STATUSES
+            ):
                 continue
-            if result["status"] not in FAILED_STATUSES:
-                continue
-            previous = existing.get(result["key"])
-            if (
-                previous is not None and previous.get("state") in TERMINAL_STATES
+            if result is None or (
+                (keep_state or previous.get("state") in TERMINAL_STATES)
                 and result["stoppedAt"] < previous["stoppedAt"]
             ):
                 items.append(previous)
                 continue
-            if isinstance(previous, dict) and previous.get("resultUuid") == result["resultUuid"]:
-                for field in (
-                    "state",
-                    "attempts",
-                    "inconclusiveRuns",
-                    "exhaustedReason",
-                    "lockedBy",
-                    "lockedAt",
-                    "runStartedAt",
-                    "junitSnapshot",
-                    "outcome",
-                    "reason",
-                    "completedAt",
-                    "pendingNotice",
-                ):
-                    if field in previous:
-                        result[field] = previous[field]
-                result["allureId"] = result.get("allureId") or previous.get("allureId")
-            else:
-                result["state"] = "pending"
-                result["attempts"] = 0
-                result["inconclusiveRuns"] = 0
-            items.append(result)
+            if not keep_state and previous.get("resultUuid") != result["resultUuid"]:
+                previous = {"state": "pending", "attempts": 0, "inconclusiveRuns": 0}
+
+            item = {**previous, **result}
+            item["allureId"] = result.get("allureId") or previous.get("allureId")
+            if (
+                previous.get("state") == "verified"
+                and result["status"] in FAILED_STATUSES
+                and (result["resultUuid"], result["stoppedAt"], result["status"])
+                != (previous["resultUuid"], previous["stoppedAt"], previous["status"])
+            ):
+                item["state"] = "active"
+            items.append(item)
         items.sort(key=lambda item: (item["module"], item["stoppedAt"], item["key"]))
         queue["sourceFingerprint"] = fingerprint
         queue["items"] = items
