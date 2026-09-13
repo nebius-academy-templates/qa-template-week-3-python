@@ -1,0 +1,475 @@
+diff --git a/appium-tests/build.gradle.kts b/appium-tests/build.gradle.kts
+index c8c1c6ccae1e0a1da5aa6a45198635fbaece4afb..b1b11109e218f10c3f4b84a215bc7ee73e45449e 100644
+--- a/appium-tests/build.gradle.kts
++++ b/appium-tests/build.gradle.kts
+@@ -17,6 +17,35 @@ dependencies {
+     testImplementation("io.qameta.allure:allure-junit5:2.29.0")
+ }
+ 
++val digestTest by sourceSets.creating {
++    kotlin.srcDir("src/digestTest/kotlin")
++    compileClasspath += sourceSets.test.get().output
++    runtimeClasspath += output + compileClasspath
++}
++
++configurations[digestTest.implementationConfigurationName]
++    .extendsFrom(configurations.testImplementation.get())
++configurations[digestTest.runtimeOnlyConfigurationName]
++    .extendsFrom(configurations.testRuntimeOnly.get())
++
++val failureDigestTest by tasks.registering(Test::class) {
++    group = "verification"
++    description = "Runs the FailureDigest logcat unit tests without starting Appium."
++    testClassesDirs = digestTest.output.classesDirs
++    classpath = digestTest.runtimeClasspath
++    systemProperty(
++        "allure.results.directory",
++        layout.buildDirectory
++            .dir("allure-results/failure-digest")
++            .get()
++            .asFile.absolutePath,
++    )
++    useJUnitPlatform()
++    testLogging {
++        events("passed", "failed", "skipped")
++    }
++}
++
+ tasks.test {
+     useJUnitPlatform()
+     systemProperty(
+@@ -121,5 +150,5 @@ val checkPageObjectBoundary by tasks.registering {
+ }
+ 
+ tasks.named("check") {
+-    dependsOn(checkPageObjectBoundary)
++    dependsOn(checkPageObjectBoundary, failureDigestTest)
+ }
+diff --git a/appium-tests/src/digestTest/kotlin/rule/FailureLogcatTest.kt b/appium-tests/src/digestTest/kotlin/rule/FailureLogcatTest.kt
+new file mode 100644
+index 0000000000000000000000000000000000000000..23ccfc22ff1a7bc699ded8bdd620eb579ac75b9c
+--- /dev/null
++++ b/appium-tests/src/digestTest/kotlin/rule/FailureLogcatTest.kt
+@@ -0,0 +1,144 @@
++package rule
++
++import org.junit.jupiter.api.Assertions.assertEquals
++import org.junit.jupiter.api.Assertions.assertFalse
++import org.junit.jupiter.api.Assertions.assertTrue
++import org.junit.jupiter.api.Test
++
++class FailureLogcatTest {
++    @Test
++    fun `keeps only the first meaningful failure line`() {
++        val failure =
++            IllegalStateException(
++                "\nExpected condition failed: id=otp_title\n" +
++                    "Build info: this belongs in JUnit and Allure",
++            )
++
++        val result = FailureDigestFormatter.failure(failure)
++
++        assertEquals(
++            "IllegalStateException: Expected condition failed: id=otp_title",
++            result,
++        )
++    }
++
++    @Test
++    fun `summarizes and deduplicates polling errors`() {
++        val first = appiumErrorLine("08-17 19:49:28.643", "first stack")
++        val second = appiumErrorLine("08-17 19:49:29.181", "second stack")
++
++        val result = FailureDigestFormatter.logcatSlice(listOf("before", first, "between", second))
++
++        assertTrue(
++            result.contains(
++                "Appium error: no such element — " +
++                    "An element could not be located on the page using the given search parameters " +
++                    "[repeated 2 times]",
++            ),
++        )
++        assertEquals(1, result.lineSequence().count { it.startsWith("Appium error:") })
++        assertFalse(result.contains("stack"))
++    }
++
++    @Test
++    fun `omits base64 screenshot responses`() {
++        val screenshot =
++            "08-17 I appium: AppiumResponse: " +
++                "{\"sessionId\":\"session\",\"value\":\"iVBOR${"A".repeat(500)}\"}"
++
++        val result = FailureDigestFormatter.logcatSlice(listOf("before", screenshot, "after"))
++
++        assertEquals("before\nafter", result)
++    }
++
++    @Test
++    fun `deduplicates identical non-error responses`() {
++        val payload = "{\"sessionId\":\"session\",\"value\":null}"
++        val first = "08-17 19:49:28.643 I appium: AppiumResponse: $payload"
++        val second = "08-17 19:49:29.181 I appium: AppiumResponse: $payload"
++
++        val result = FailureDigestFormatter.logcatSlice(listOf(first, second))
++
++        assertEquals(1, result.lineSequence().count())
++        assertTrue(result.contains("[repeated 2 times]"))
++    }
++
++    @Test
++    fun `collapses repeated find-element polling`() {
++        val lines =
++            listOf(
++                "I appium: channel read: POST /session/one/element",
++                "I appium: FindElement command",
++                "I appium: method: 'id', selector: 'otp_title'",
++                "I appium: Waiting up to 10000ms for the device to idle",
++                "I appium: channel read: POST /session/one/element",
++                "I appium: FindElement command",
++                "I appium: method: 'id', selector: 'otp_title'",
++                "I appium: Waiting up to 10000ms for the device to idle",
++            )
++
++        val result = FailureDigestFormatter.logcatSlice(lines)
++
++        assertEquals("Appium find: id=otp_title [repeated 2 times]", result)
++    }
++
++    @Test
++    fun `drops external verbose chatter but keeps higher priority and app lines`() {
++        val result =
++            FailureDigestFormatter.logcatSlice(
++                listOf(
++                    "08-17 19:49:28.309 726 888 D WifiDataStall: noisy",
++                    "08-17 19:49:28.310 726 888 V WifiConfigManager: noisy",
++                    "08-17 19:49:28.311 726 888 I Network: useful info",
++                    "08-17 19:49:28.312 726 888 W Runtime: useful warning",
++                    "08-17 19:49:28.313 726 888 D App: com.sandbox.qa state",
++                ),
++            )
++
++        assertFalse(result.contains("WifiDataStall"))
++        assertFalse(result.contains("WifiConfigManager"))
++        assertTrue(result.contains("useful info"))
++        assertTrue(result.contains("useful warning"))
++        assertTrue(result.contains("com.sandbox.qa state"))
++    }
++
++    @Test
++    fun `preserves both ends of other long lines`() {
++        val line = "important-start-" + "x".repeat(400) + "-important-end"
++
++        val result = FailureDigestFormatter.logcatSlice(listOf(line))
++
++        assertTrue(result.startsWith("important-start-"))
++        assertTrue(result.endsWith("-important-end"))
++        assertTrue(result.contains("[truncated middle]"))
++        assertEquals(240, result.length)
++    }
++
++    @Test
++    fun `keeps app crash slice behavior`() {
++        val lines =
++            buildList {
++                repeat(50) { add("old-$it") }
++                add("FATAL EXCEPTION: main")
++                add("Process: com.sandbox.qa, PID: 123")
++                add("java.lang.IllegalStateException: broken")
++            }
++
++        val result = FailureDigestFormatter.logcatSlice(lines)
++
++        assertFalse(result.contains("old-49"))
++        assertTrue(result.startsWith("FATAL EXCEPTION: main"))
++        assertTrue(result.endsWith("java.lang.IllegalStateException: broken"))
++    }
++
++    private fun appiumErrorLine(
++        timestamp: String,
++        stacktrace: String,
++    ): String =
++        "$timestamp I appium: AppiumResponse: " +
++            "{\"sessionId\":\"session\",\"value\":{" +
++            "\"error\":\"no such element\"," +
++            "\"message\":\"An element could not be located on the page " +
++            "using the given\\nsearch parameters\"," +
++            "\"stacktrace\":\"$stacktrace\"}}"
++}
+diff --git a/appium-tests/src/test/kotlin/rule/AppiumTestCase.kt b/appium-tests/src/test/kotlin/rule/AppiumTestCase.kt
+index 245214e6e8b7a4d0bc587f4568f2f9eaa61fa330..548e5d5ecdc0d2239eaf31e3d5dc3cddf9e4b3cc 100644
+--- a/appium-tests/src/test/kotlin/rule/AppiumTestCase.kt
++++ b/appium-tests/src/test/kotlin/rule/AppiumTestCase.kt
+@@ -38,7 +38,7 @@ import java.io.ByteArrayInputStream
+  *   steps + checks (asserts live here); testcases = the action sequence.
+  * - Waits and retries live on Element (waitFor / waitForGone / retryClick);
+  *   device-level primitives live on Device.
+- * - Failure artifacts (screenshot + logcat + page source) come from
++ * - Failure artifacts (logcat + screenshot + page source) come from
+  *   ArtifactsOnFailure; FailureDigest condenses them into one small
+  *   build/reports/digests/test_log_{method}_{try}.txt per failure. The artifact
+  *   exception handler runs before the digest's after-test-execution callback,
+@@ -100,10 +100,9 @@ abstract class AppiumTestCase {
+     }
+ 
+     /**
+-     * Wraps [body] as a named Allure step and attaches the screen state reached by
+-     * that step. The attachment makes successful steps inspectable in the HTML
+-     * report; failure-only logcat and page source remain the responsibility of
+-     * [ArtifactsOnFailure].
++     * Wraps [body] as a named Allure step and attaches the screen state reached
++     * after a successful step. [ArtifactsOnFailure] owns the screenshot, logcat,
++     * and page source when the step throws.
+      */
+     protected fun step(
+         name: String,
+@@ -111,11 +110,8 @@ abstract class AppiumTestCase {
+     ) = Allure.step(
+         name,
+         Allure.ThrowableRunnableVoid {
+-            try {
+-                body()
+-            } finally {
+-                attachScreenState()
+-            }
++            body()
++            attachScreenState()
+         },
+     )
+ 
+diff --git a/appium-tests/src/test/kotlin/rule/ArtifactsOnFailure.kt b/appium-tests/src/test/kotlin/rule/ArtifactsOnFailure.kt
+index 2a949312808d35f8ba36e10d544f425e9e94d316..a3b9a43e32dd2e87e111da9d7b45f298816c72a5 100644
+--- a/appium-tests/src/test/kotlin/rule/ArtifactsOnFailure.kt
++++ b/appium-tests/src/test/kotlin/rule/ArtifactsOnFailure.kt
+@@ -9,7 +9,7 @@ import java.io.File
+ import java.nio.charset.StandardCharsets
+ 
+ /**
+- * On a FAILED test, captures a screenshot, the device logcat, and the UI page
++ * On a FAILED test, captures the device logcat, a screenshot, and the UI page
+  * source so a red run leaves evidence to triage from instead of just a stacktrace.
+  * Every artifact is both saved as a raw file and attached to the failed Allure
+  * test, so it is available from the report without browsing the build directory.
+@@ -46,17 +46,8 @@ class ArtifactsOnFailure : TestExecutionExceptionHandler {
+         val name = "$base-${System.currentTimeMillis()}"
+         val savedFiles = mutableListOf<String>()
+ 
+-        capture(
+-            label = "screenshot",
+-            file = File(dir, "$name.png"),
+-            attachmentName = "Failure screenshot",
+-            mediaType = "image/png",
+-            extension = ".png",
+-            savedFiles = savedFiles,
+-        ) {
+-            driver.getScreenshotAs(OutputType.BYTES)
+-        }
+-
++        // Read logcat first because Appium logs the screenshot response itself,
++        // including the full base64 PNG payload, before it drains the buffer.
+         capture(
+             label = "logcat",
+             file = File(dir, "$name.logcat"),
+@@ -74,6 +65,17 @@ class ArtifactsOnFailure : TestExecutionExceptionHandler {
+                 .toByteArray(StandardCharsets.UTF_8)
+         }
+ 
++        capture(
++            label = "screenshot",
++            file = File(dir, "$name.png"),
++            attachmentName = "Failure screenshot",
++            mediaType = "image/png",
++            extension = ".png",
++            savedFiles = savedFiles,
++        ) {
++            driver.getScreenshotAs(OutputType.BYTES)
++        }
++
+         capture(
+             label = "page source",
+             file = File(dir, "$name.xml"),
+diff --git a/appium-tests/src/test/kotlin/rule/FailureDigest.kt b/appium-tests/src/test/kotlin/rule/FailureDigest.kt
+index e55c6ad191de5f9c32de392447bc5756691b96ed..69afc38daad08c024de7fe70f5c4d8eb6afabfc1 100644
+--- a/appium-tests/src/test/kotlin/rule/FailureDigest.kt
++++ b/appium-tests/src/test/kotlin/rule/FailureDigest.kt
+@@ -2,6 +2,7 @@ package rule
+ 
+ import org.junit.jupiter.api.extension.AfterTestExecutionCallback
+ import org.junit.jupiter.api.extension.ExtensionContext
++import org.openqa.selenium.json.Json
+ import java.io.File
+ 
+ /**
+@@ -27,7 +28,7 @@ class FailureDigest : AfterTestExecutionCallback {
+                 appendLine("display : ${context.displayName}")
+                 appendLine("class   : ${context.testClass.map { it.name }.orElse("?")}")
+                 appendLine()
+-                appendLine("FAILURE : $failure")
++                appendLine("FAILURE : ${FailureDigestFormatter.failure(failure)}")
+                 appendLine()
+                 appendLine("--- project stack frames ---")
+                 appendLine(projectFrames(failure))
+@@ -125,38 +126,147 @@ class FailureDigest : AfterTestExecutionCallback {
+     private fun logcatSlice(logcatFile: File?): String {
+         if (logcatFile == null) return "(no logcat: ArtifactsOnFailure left no file for this test)"
+ 
+-        val lines = logcatFile.readLines()
++        return FailureDigestFormatter.logcatSlice(logcatFile.readLines())
++    }
++
++    private data class FailureArtifacts(
++        val screenshot: File? = null,
++        val logcat: File? = null,
++        val pageSource: File? = null,
++    )
++}
++
++/** Formats compact digest details without discarding the original evidence. */
++object FailureDigestFormatter {
++    private const val MAX_LOGCAT_LINES = 120
++    private const val TAIL_LOGCAT_LINES = 40
++    private const val MAX_LINE_CHARS = 240
++    private const val APPIUM_RESPONSE = "AppiumResponse:"
++    private const val PNG_BASE64_PREFIX = "iVBOR"
++    private const val TRUNCATION_MARKER = " …[truncated middle]… "
++    private val pngScreenshotValue = Regex("\"value\"\\s*:\\s*\"$PNG_BASE64_PREFIX")
++    private val findElement = Regex("""method:\s*'([^']+)',\s*selector:\s*'([^']+)'""")
++    private val verboseOrDebug = Regex("""^\S+\s+\S+\s+\d+\s+\d+\s+[VD]\s+""")
++
++    fun failure(failure: Throwable): String {
++        val type = failure.javaClass.simpleName.ifBlank { failure.javaClass.name }
++        val message =
++            failure.message
++                ?.lineSequence()
++                ?.map(String::trim)
++                ?.firstOrNull(String::isNotEmpty)
++        return if (message == null) type else "$type: $message"
++    }
++
++    fun logcatSlice(lines: List<String>): String {
+         // Anchor only on a crash of the app under test: the uiautomator2
+         // server also dies with a FATAL EXCEPTION on session teardown, and
+         // that line is exactly the loud-but-irrelevant kind. The crashing
+         // process is named on the log line right below the FATAL header.
+         val fatalAt =
+-            lines.indices.lastOrNull { i ->
+-                lines[i].contains("FATAL EXCEPTION") &&
+-                    lines.getOrNull(i + 1)?.contains("Process: com.sandbox.qa") == true
++            lines.indices.lastOrNull { index ->
++                lines[index].contains("FATAL EXCEPTION") &&
++                    lines.getOrNull(index + 1)?.contains("Process: com.sandbox.qa") == true
+             } ?: -1
+-        val slice =
++        val selected =
+             if (fatalAt >= 0) {
+                 lines.drop(fatalAt).take(MAX_LOGCAT_LINES)
+             } else {
+                 lines.takeLast(TAIL_LOGCAT_LINES)
+             }
+-        // Cap the line length: Appium echoes response payloads (base64
+-        // screenshots) into logcat, and those characters explain nothing.
+-        return slice.joinToString("\n") {
+-            if (it.length > MAX_LINE_CHARS) it.take(MAX_LINE_CHARS) + " …[truncated]" else it
++
++        val summarized = selected.mapNotNull(::summarize)
++        val repetitions =
++            summarized
++                .mapNotNull(SummarizedLine::deduplicationKey)
++                .groupingBy { it }
++                .eachCount()
++        val emitted = mutableSetOf<String>()
++
++        return summarized
++            .mapNotNull { line ->
++                val key = line.deduplicationKey
++                if (key != null && !emitted.add(key)) return@mapNotNull null
++
++                val count = key?.let(repetitions::get) ?: 0
++                val suffix = if (count > 1) " [repeated $count times]" else ""
++                truncateMiddle(line.text + suffix)
++            }.joinToString("\n")
++    }
++
++    private fun summarize(line: String): SummarizedLine? {
++        val find = findElement.find(line)
++        if (find != null) {
++            val method = find.groupValues[1]
++            val selector = find.groupValues[2]
++            return SummarizedLine(
++                text = "Appium find: $method=$selector",
++                deduplicationKey = "appium-find:$method:$selector",
++            )
++        }
++        if (isFindElementNoise(line)) return null
++        if (isExternalVerboseOrDebug(line)) return null
++
++        val markerAt = line.indexOf(APPIUM_RESPONSE)
++        if (markerAt < 0) return SummarizedLine(line)
++
++        val payload = line.substring(markerAt + APPIUM_RESPONSE.length).trim()
++        if (pngScreenshotValue.containsMatchIn(payload)) return null
++
++        val response =
++            runCatching {
++                Json().toType<Map<String, Any?>>(payload, Json.MAP_TYPE)
++            }.getOrNull()
++        val value = response?.get("value")
++        val details = (value as? Map<*, *>) ?: response
++        val error = details?.get("error") as? String
++        if (error != null) {
++            val message =
++                (details["message"] as? String)
++                    ?.replace(Regex("\\s+"), " ")
++                    ?.trim()
++            val text =
++                if (message.isNullOrBlank()) {
++                    "Appium error: $error"
++                } else {
++                    "Appium error: $error — $message"
++                }
++            return SummarizedLine(
++                text = text,
++                deduplicationKey = "appium-error:$error:$message",
++            )
+         }
++
++        return SummarizedLine(
++            text = line,
++            deduplicationKey = "appium-response:$payload",
++        )
++    }
++
++    private fun isFindElementNoise(line: String): Boolean {
++        if (!line.contains("appium", ignoreCase = true)) return false
++
++        return line.contains("FindElement command") ||
++            (line.contains("Waiting up to") && line.contains("for the device to idle")) ||
++            (line.contains("channel read: POST /session/") && line.trimEnd().endsWith("/element"))
+     }
+ 
+-    private companion object {
+-        const val MAX_LOGCAT_LINES = 120
+-        const val TAIL_LOGCAT_LINES = 40
+-        const val MAX_LINE_CHARS = 240
++    private fun isExternalVerboseOrDebug(line: String): Boolean =
++        verboseOrDebug.containsMatchIn(line) &&
++            !line.contains("appium", ignoreCase = true) &&
++            !line.contains("com.sandbox.qa")
++
++    private fun truncateMiddle(line: String): String {
++        if (line.length <= MAX_LINE_CHARS) return line
++
++        val available = MAX_LINE_CHARS - TRUNCATION_MARKER.length
++        val headLength = available * 2 / 3
++        val tailLength = available - headLength
++        return line.take(headLength) + TRUNCATION_MARKER + line.takeLast(tailLength)
+     }
+ 
+-    private data class FailureArtifacts(
+-        val screenshot: File? = null,
+-        val logcat: File? = null,
+-        val pageSource: File? = null,
++    private data class SummarizedLine(
++        val text: String,
++        val deduplicationKey: String? = null,
+     )
+ }
