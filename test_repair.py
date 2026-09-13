@@ -53,7 +53,7 @@ TEST_TASKS = {
     ":appium-tests:test": "appium-tests",
     "appium-tests:test": "appium-tests",
 }
-AGGREGATE_TEST_TASK_NAMES = frozenset({"test", "check", "build"})
+AGGREGATE_TEST_TASK_NAMES = frozenset({"test", "check", "build", "buildNeeded", "buildDependents"})
 ACTIVE_STATES = frozenset({"locked", "active", "running", "verified", "exhausted"})
 GRADLE_WRAPPERS = frozenset({"gradlew", "gradlew.bat"})
 SHELL_CONTROL_FRAGMENTS = ("\r", "\n", "&&", "||", ";", "|", "&", ">", "<", "`", "$(")
@@ -110,7 +110,7 @@ def parse_iso(value: object) -> datetime | None:
 
 
 @contextmanager
-def state_file_lock(timeout_seconds: float = 10.0) -> Iterator[None]:
+def state_file_lock(timeout_seconds: float = 2.0) -> Iterator[None]:
     """Serialize repair-state mutations without third-party dependencies."""
     STATE_DIR.mkdir(parents=True, exist_ok=True)
     deadline = time.monotonic() + timeout_seconds
@@ -129,16 +129,10 @@ def state_file_lock(timeout_seconds: float = 10.0) -> Iterator[None]:
                 os.close(descriptor)
             break
         except FileExistsError:
-            try:
-                stale = time.time() - STATE_FILE_LOCK_PATH.stat().st_mtime > 60
-            except FileNotFoundError:
-                continue
-            if stale:
-                STATE_FILE_LOCK_PATH.unlink(missing_ok=True)
-                continue
             if time.monotonic() >= deadline:
                 raise RuntimeError(
-                    f"Test-repair state file is busy: {STATE_FILE_LOCK_PATH}"
+                    f"Test-repair state file is busy: {STATE_FILE_LOCK_PATH}. "
+                    "Remove an abandoned lock only after its hook process has stopped."
                 ) from None
             time.sleep(0.05)
     try:
@@ -183,7 +177,16 @@ def empty_state() -> dict[str, Any]:
 
 
 def load_queue() -> dict[str, Any]:
-    return _read_json_object(STATE_PATH) or empty_state()
+    queue = _read_json_object(STATE_PATH)
+    if queue is None:
+        return empty_state()
+    items = queue.get("items")
+    states = ("pending", *ACTIVE_STATES, *TERMINAL_STATES)
+    if not isinstance(items, list) or any(
+        not isinstance(item, dict) or item.get("state") not in states for item in items
+    ):
+        raise RuntimeError("Invalid repair queue: items must have a known repair state")
+    return queue
 
 
 def save_queue(state: dict[str, Any]) -> None:
@@ -279,7 +282,12 @@ def refresh(if_changed: bool = False) -> int:
         for module, path in files:
             result = normalize_result(module, path)
             previous = newest.get(result["key"])
-            if previous is None or result["stoppedAt"] > previous["stoppedAt"]:
+            if previous is None or (
+                result["stoppedAt"], result["status"] in FAILED_STATUSES, str(result["resultUuid"])
+            ) > (
+                previous["stoppedAt"], previous["status"] in FAILED_STATUSES,
+                str(previous["resultUuid"]),
+            ):
                 newest[result["key"]] = result
 
         existing = {item.get("key"): item for item in queue.get("items", [])}
@@ -294,7 +302,14 @@ def refresh(if_changed: bool = False) -> int:
         ]
         for item in items:
             result = newest.get(item["key"])
-            if result is not None:
+            if result is not None and result["stoppedAt"] >= item["stoppedAt"]:
+                if (
+                    item.get("state") == "verified"
+                    and result["status"] in FAILED_STATUSES
+                    and (result["resultUuid"], result["stoppedAt"], result["status"])
+                    != (item["resultUuid"], item["stoppedAt"], item["status"])
+                ):
+                    item["state"] = "active"
                 allure_id = result.get("allureId") or item.get("allureId")
                 item.update(result)
                 item["allureId"] = allure_id
@@ -305,6 +320,12 @@ def refresh(if_changed: bool = False) -> int:
             if result["status"] not in FAILED_STATUSES:
                 continue
             previous = existing.get(result["key"])
+            if (
+                previous is not None and previous.get("state") in TERMINAL_STATES
+                and result["stoppedAt"] < previous["stoppedAt"]
+            ):
+                items.append(previous)
+                continue
             if isinstance(previous, dict) and previous.get("resultUuid") == result["resultUuid"]:
                 for field in (
                     "state",
@@ -396,6 +417,7 @@ def lock(worker: str | None = None) -> int:
 
 
 def complete(item_id: str, outcome: str, reason: str | None = None) -> int:
+    refresh(if_changed=True)
     with state_file_lock():
         queue = load_queue()
         item = next(
@@ -512,37 +534,65 @@ def _unquote(value: str) -> str:
 
 def _command_tokens(command: str) -> tuple[list[str], str | None]:
     try:
-        raw_tokens = shlex.split(command, posix=False)
+        return shlex.split(command, comments=True, posix=False), None
     except ValueError as error:
         return [], f"Cannot parse shell command safely: {error}"
-    tokens: list[str] = []
-    for token in raw_tokens:
-        if token.startswith("#"):
-            break
-        tokens.append(token)
-    return tokens, None
 
 
 def _is_test_running_task(token: str) -> bool:
     """Return whether a Gradle task can transitively execute tests."""
     task_name = _unquote(token).rstrip(":").rsplit(":", 1)[-1]
-    return task_name in AGGREGATE_TEST_TASK_NAMES
+    return bool(task_name) and (
+        any(name.startswith(task_name) for name in AGGREGATE_TEST_TASK_NAMES)
+        or task_name in {"bN", "bD"}
+    )
+
+
+def _command_name(token: str) -> str:
+    return _unquote(token).replace("\\", "/").rsplit("/", 1)[-1].lower()
 
 
 def parse_gradle_command(command: str) -> dict[str, Any]:
     tokens, parse_error = _command_tokens(command)
     task_tokens = {
         part
-        for token in tokens or command.split()
+        for token in (command.split() if parse_error else tokens)
         for part in (
             [token] if token.startswith(('"', "'")) else re.split(r"[;&|()<>\r\n]", token)
         )
     }
-    has_gradle = any(
-        _unquote(token).replace("\\", "/").rsplit("/", 1)[-1].lower()
-        in GRADLE_WRAPPERS | {"gradle", "gradle.bat"}
+    shells = {"bash", "sh", "cmd", "powershell", "pwsh"}
+    if any(
+        _command_name(token).removesuffix(".exe") in shells
         for token in task_tokens
-    )
+    ) and any(token.lower() in {"-c", "-lc", "-command", "/c", "/k"} for token in tokens):
+        task_tokens.update(
+            part for token in tokens for part in re.split(r"[\s'\";&|()<>]", token)
+        )
+    command_names = {_command_name(token) for token in task_tokens}
+    runner_tokens = tokens[1:] if tokens[:1] == ["&"] else tokens
+    if runner_tokens and _command_name(runner_tokens[0]).removesuffix(".exe") in shells:
+        arguments = runner_tokens[1:]
+        flag = next((i for i, token in enumerate(arguments) if token.lower() in {
+            "-file", "-c", "-lc", "-command", "/c", "/k",
+        }), None)
+        runner_tokens = (
+            arguments[flag + 1:] if flag is not None
+            else [token for token in arguments if not token.startswith("-")]
+        )
+        if flag is not None and arguments[flag].lower() != "-file" and runner_tokens:
+            script_tokens, _ = _command_tokens(_unquote(runner_tokens[0]))
+            runner_tokens = script_tokens + runner_tokens[1:]
+    if runner_tokens[:1] == ["&"]:
+        runner_tokens = runner_tokens[1:]
+    if runner_tokens and _command_name(runner_tokens[0]) in {
+        "run-suite.ps1", "run-suite.sh", "run-suite-parallel.ps1", "run-suite-parallel.sh",
+    }:
+        return {
+            "isTestCommand": True,
+            "error": "During repair, run the exact test with the repository Gradle wrapper.",
+        }
+    has_gradle = bool(command_names & (GRADLE_WRAPPERS | {"gradle", "gradle.bat"}))
     modules = {TEST_TASKS[token] for token in task_tokens if token in TEST_TASKS}
     aggregate_tasks = [
         token
@@ -561,11 +611,19 @@ def parse_gradle_command(command: str) -> dict[str, Any]:
                 "substitutions, and multiline commands are blocked."
             ),
         }
-    executable = _unquote(tokens[0]).replace("\\", "/").rsplit("/", 1)[-1].lower()
+    executable = _command_name(tokens[0])
     if executable not in GRADLE_WRAPPERS:
         return {
             "isTestCommand": True,
             "error": "Run the test with one direct repository Gradle wrapper invocation.",
+        }
+    if any(
+        token in {"--dry-run", "-m", "--test-dry-run", "--help", "-h", "--version", "-v"}
+        for token in tokens
+    ):
+        return {
+            "isTestCommand": True,
+            "error": "Run the exact test; dry-run, help and version options do not execute it.",
         }
     if aggregate_tasks:
         return {
@@ -663,6 +721,8 @@ def parse_hook_event(text: str, before: bool, adapter: str) -> dict[str, Any]:
     event_name = root.get("hook_event_name")
     if not isinstance(event_name, str) or not event_name:
         raise RuntimeError("Hook payload has no top-level hook_event_name")
+    if event_name not in (("PreToolUse",) if before else ("PostToolUse", "PostToolUseFailure")):
+        raise RuntimeError("Hook event does not match the configured phase")
     dialect = resolve_adapter(adapter)
     command = _tool_command(root, dialect)
     extractor = {
@@ -673,6 +733,7 @@ def parse_hook_event(text: str, before: bool, adapter: str) -> dict[str, Any]:
     return {
         "eventName": event_name,
         "adapter": dialect,
+        "toolUseId": root.get("tool_use_id"),
         "command": command,
         "output": output,
         "exitCode": exit_code,
@@ -714,6 +775,7 @@ def _junit_snapshot(module: str) -> dict[str, str]:
 def _read_junit_cases(
     module: str,
     previous_snapshot: dict[str, str],
+    started_at: datetime,
 ) -> tuple[list[ET.Element], str]:
     directory = REPO_ROOT / module / "build" / "test-results" / "test"
     if not directory.is_dir():
@@ -723,7 +785,10 @@ def _read_junit_cases(
         stat = path.stat()
         relative_path = path.relative_to(directory).as_posix()
         signature = f"{stat.st_mtime_ns}:{stat.st_size}"
-        if previous_snapshot.get(relative_path) != signature:
+        if (
+            previous_snapshot.get(relative_path) != signature
+            and stat.st_mtime >= started_at.timestamp()
+        ):
             files.append(path)
     if not files:
         return [], "no fresh JUnit XML was produced"
@@ -740,7 +805,10 @@ def inspect_junit(item: dict[str, Any]) -> tuple[str, str]:
     previous_snapshot = item.get("junitSnapshot")
     if not isinstance(previous_snapshot, dict):
         return "inconclusive", "no matching before-run JUnit snapshot exists"
-    cases, error = _read_junit_cases(str(item["module"]), previous_snapshot)
+    started_at = parse_iso(item.get("runStartedAt"))
+    if started_at is None:
+        return "inconclusive", "no matching run start time exists"
+    cases, error = _read_junit_cases(str(item["module"]), previous_snapshot, started_at)
     if error:
         return "inconclusive", error
     expected_names = {
@@ -911,7 +979,8 @@ def process_before(event: dict[str, Any]) -> tuple[str | None, str | None]:
                 "its POST hook before starting another run.",
             )
         item["state"] = "running"
-        item["runStartedAt"] = now_iso()
+        item["runStartedAt"] = now().isoformat()
+        item["toolUseId"] = event.get("toolUseId")
         item["junitSnapshot"] = _junit_snapshot(str(item["module"]))
         item.setdefault("inconclusiveRuns", 0)
         save_queue(queue)
@@ -930,6 +999,7 @@ def process_after(event: dict[str, Any]) -> str | None:
             item is None
             or item.get("state") != "running"
             or not _target_matches(item, target)
+            or item.get("toolUseId") != event.get("toolUseId")
         ):
             return None
         state_before = str(item.get("state"))
@@ -1012,11 +1082,11 @@ def process_after(event: dict[str, Any]) -> str | None:
 
 
 def hook_main(phase: str, adapter: str) -> int:
-    text = sys.stdin.read()
     before = phase == "before"
     dialect = resolve_adapter(adapter)
     event_name = "PreToolUse" if before else "PostToolUse"
     try:
+        text = sys.stdin.read()
         event = parse_hook_event(text, before, adapter)
         event_name = event["eventName"]
         dialect = str(event["adapter"])
