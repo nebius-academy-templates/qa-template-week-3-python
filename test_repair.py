@@ -43,8 +43,6 @@ LOCK_TTL = timedelta(hours=2)
 MAX_REPAIR_ATTEMPTS = 3
 MAX_INCONCLUSIVE_RUNS = 3
 
-# The dialect is supplied by the client configuration, never guessed from the
-# payload: a malformed event must still be answered in the caller's format.
 ADAPTERS = ("codex", "claude")
 
 TEST_TASKS = {
