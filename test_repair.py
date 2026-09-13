@@ -282,8 +282,27 @@ def refresh(if_changed: bool = False) -> int:
                 newest[result["key"]] = result
 
         existing = {item.get("key"): item for item in queue.get("items", [])}
-        items: list[dict[str, Any]] = []
+        # A newer Allure result cannot finish or restart an unfinished repair.
+        # Keep its queue identity and budgets, but remember the observed result.
+        items = [
+            item
+            for item in existing.values()
+            if item.get("state") in ACTIVE_STATES
+            or (
+                item.get("state") == "pending"
+                and (int(item.get("attempts", 0)) > 0 or int(item.get("inconclusiveRuns", 0)) > 0)
+            )
+        ]
+        for item in items:
+            result = newest.get(item["key"])
+            if result is not None:
+                allure_id = result.get("allureId") or item.get("allureId")
+                item.update(result)
+                item["allureId"] = allure_id
+        retained_keys = {item["key"] for item in items}
         for result in newest.values():
+            if result["key"] in retained_keys:
+                continue
             if result["status"] not in FAILED_STATUSES:
                 continue
             previous = existing.get(result["key"])
@@ -493,15 +512,22 @@ def _unquote(value: str) -> str:
 
 
 def _command_tokens(command: str) -> tuple[list[str], str | None]:
-    try:
-        raw_tokens = shlex.split(command, posix=False)
-    except ValueError as error:
-        return [], f"Cannot parse shell command safely: {error}"
+    lexer = shlex.shlex(command, posix=False, punctuation_chars=";&|()<>\r\n")
+    lexer.whitespace = " \t"
+    lexer.whitespace_split = True
+    lexer.commenters = ""
     tokens: list[str] = []
-    for token in raw_tokens:
-        if token.startswith("#"):
-            break
-        tokens.append(token)
+    in_comment = False
+    try:
+        for token in lexer:
+            if "\n" in token and not token.startswith(('"', "'")):
+                in_comment = False
+            elif token.startswith("#"):
+                in_comment = True
+            if not in_comment:
+                tokens.append(token)
+    except ValueError as error:
+        return tokens, f"Cannot parse shell command safely: {error}"
     return tokens, None
 
 
@@ -513,25 +539,52 @@ def _is_test_running_task(token: str) -> bool:
 
 def parse_gradle_command(command: str) -> dict[str, Any]:
     tokens, parse_error = _command_tokens(command)
-    if parse_error:
-        rough_tokens = {
-            token.strip("\"'();&|")
-            for token in command.split()
-        }
-        is_test_command = any(_is_test_running_task(token) for token in rough_tokens)
-        return (
-            {"isTestCommand": True, "error": parse_error}
-            if is_test_command
-            else {"isTestCommand": False}
-        )
-    modules = {TEST_TASKS[token] for token in tokens if token in TEST_TASKS}
-    aggregate_tasks = [
-        token
-        for token in tokens
-        if token not in TEST_TASKS and _is_test_running_task(token)
-    ]
-    if not modules and not aggregate_tasks:
+    # Inspect task arguments only where a Gradle wrapper is actually invoked.
+    segments: list[list[str]] = [[]]
+    for token in tokens:
+        if set(token) <= set(";&|()<>\r\n"):
+            segments.append([])
+        else:
+            segments[-1].append(token)
+    shell_options = {
+        "bash": {"-c", "-lc"},
+        "sh": {"-c"},
+        "cmd": {"/c"},
+        "powershell": {"-command", "-c"},
+        "pwsh": {"-command", "-c"},
+    }
+    gradle_tokens: list[str] = []
+    for segment in segments:
+        if not segment:
+            continue
+        executable = _unquote(segment[0]).replace("\\", "/").rsplit("/", 1)[-1].lower()
+        options = shell_options.get(executable.removesuffix(".exe"), set())
+        for index, token in enumerate(segment[1:], start=1):
+            if token.lower() in options and index + 1 < len(segment):
+                script = " ".join(_unquote(part) for part in segment[index + 1 :])
+                if parse_gradle_command(script).get("isTestCommand"):
+                    return {
+                        "isTestCommand": True,
+                        "error": (
+                            "Run the test with one direct repository Gradle wrapper invocation."
+                        ),
+                    }
+        if executable in GRADLE_WRAPPERS | {"gradle", "gradle.bat"} and any(
+            _is_test_running_task(token) for token in segment[1:]
+        ):
+            if executable not in GRADLE_WRAPPERS:
+                return {
+                    "isTestCommand": True,
+                    "error": (
+                        "Run the test with one direct repository Gradle wrapper invocation."
+                    ),
+                }
+            gradle_tokens = [_unquote(token) for token in segment]
+            break
+    if not gradle_tokens:
         return {"isTestCommand": False}
+    if parse_error:
+        return {"isTestCommand": True, "error": parse_error}
     if any(fragment in command for fragment in SHELL_CONTROL_FRAGMENTS):
         return {
             "isTestCommand": True,
@@ -540,12 +593,13 @@ def parse_gradle_command(command: str) -> dict[str, Any]:
                 "substitutions, and multiline commands are blocked."
             ),
         }
-    executable = _unquote(tokens[0]).replace("\\", "/").rsplit("/", 1)[-1].lower()
-    if executable not in GRADLE_WRAPPERS:
-        return {
-            "isTestCommand": True,
-            "error": "Run the test with one direct repository Gradle wrapper invocation.",
-        }
+    tokens = gradle_tokens
+    modules = {TEST_TASKS[token] for token in tokens if token in TEST_TASKS}
+    aggregate_tasks = [
+        token
+        for token in tokens
+        if token not in TEST_TASKS and _is_test_running_task(token)
+    ]
     if aggregate_tasks:
         return {
             "isTestCommand": True,

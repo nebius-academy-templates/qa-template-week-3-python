@@ -125,6 +125,10 @@ before the hook practice. If a target file already contains custom hooks, merge
 the supplied hook entries instead of replacing them. Restart the coding-agent
 session after the configuration changes.
 
+The hooks check each shell command for a test invocation. Their status messages
+describe that check; they do not mean a test ran or results were recorded.
+Commands unrelated to test execution leave the repair queue unchanged.
+
 Run the following commands from the root of `AI-for-Kotlin-practice`.
 
 ## Inspect the CLI
