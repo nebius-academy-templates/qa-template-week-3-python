@@ -570,28 +570,6 @@ def parse_gradle_command(command: str) -> dict[str, Any]:
             part for token in tokens for part in re.split(r"[\s'\";&|()<>]", token)
         )
     command_names = {_command_name(token) for token in task_tokens}
-    runner_tokens = tokens[1:] if tokens[:1] == ["&"] else tokens
-    if runner_tokens and _command_name(runner_tokens[0]).removesuffix(".exe") in shells:
-        arguments = runner_tokens[1:]
-        flag = next((i for i, token in enumerate(arguments) if token.lower() in {
-            "-file", "-c", "-lc", "-command", "/c", "/k",
-        }), None)
-        runner_tokens = (
-            arguments[flag + 1:] if flag is not None
-            else [token for token in arguments if not token.startswith("-")]
-        )
-        if flag is not None and arguments[flag].lower() != "-file" and runner_tokens:
-            script_tokens, _ = _command_tokens(_unquote(runner_tokens[0]))
-            runner_tokens = script_tokens + runner_tokens[1:]
-    if runner_tokens[:1] == ["&"]:
-        runner_tokens = runner_tokens[1:]
-    if runner_tokens and _command_name(runner_tokens[0]) in {
-        "run-suite.ps1", "run-suite.sh", "run-suite-parallel.ps1", "run-suite-parallel.sh",
-    }:
-        return {
-            "isTestCommand": True,
-            "error": "During repair, run the exact test with the repository Gradle wrapper.",
-        }
     has_gradle = bool(command_names & (GRADLE_WRAPPERS | {"gradle", "gradle.bat"}))
     modules = {TEST_TASKS[token] for token in task_tokens if token in TEST_TASKS}
     aggregate_tasks = [
