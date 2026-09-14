@@ -7,7 +7,7 @@
           {
             "type": "command",
             "shell": "bash",
-            "command": "if command -v python3 >/dev/null 2>&1; then PY=python3; else PY=python; fi; \"$PY\" \"$CLAUDE_PROJECT_DIR/.agents/hooks/test_repair.py\" before --adapter claude",
+            "command": "if python3 -c 'import sys; sys.exit(sys.version_info < (3, 11))' </dev/null >/dev/null 2>&1; then REPAIR_PYTHON=python3; elif python -c 'import sys; sys.exit(sys.version_info < (3, 11))' </dev/null >/dev/null 2>&1; then REPAIR_PYTHON=python; else printf '%s\\n' 'test-repair: no working Python 3.11+ interpreter found (tried python3 and python). Fix Python or PATH and restart Claude Code.' >&2; exit 2; fi; if REPAIR_OUTPUT=$(\"$REPAIR_PYTHON\" \"$CLAUDE_PROJECT_DIR/.agents/hooks/test_repair.py\" before --adapter claude); then printf '%s\\n' \"$REPAIR_OUTPUT\"; else printf '%s\\n' 'test-repair PRE hook failed; command blocked. Check Python and the hook path.' >&2; exit 2; fi",
             "timeout": 10,
             "statusMessage": "Checking whether this command runs tests"
           }
@@ -21,7 +21,7 @@
           {
             "type": "command",
             "shell": "bash",
-            "command": "if command -v python3 >/dev/null 2>&1; then PY=python3; else PY=python; fi; \"$PY\" \"$CLAUDE_PROJECT_DIR/.agents/hooks/test_repair.py\" after --adapter claude",
+            "command": "if python3 -c 'import sys; sys.exit(sys.version_info < (3, 11))' </dev/null >/dev/null 2>&1; then REPAIR_PYTHON=python3; elif python -c 'import sys; sys.exit(sys.version_info < (3, 11))' </dev/null >/dev/null 2>&1; then REPAIR_PYTHON=python; else printf '%s\\n' 'test-repair: no working Python 3.11+ interpreter found (tried python3 and python). Fix Python or PATH and restart Claude Code.' >&2; exit 2; fi; if REPAIR_OUTPUT=$(\"$REPAIR_PYTHON\" \"$CLAUDE_PROJECT_DIR/.agents/hooks/test_repair.py\" after --adapter claude); then printf '%s\\n' \"$REPAIR_OUTPUT\"; else printf '%s\\n' 'test-repair POST hook failed. Check Python and the hook path.' >&2; exit 2; fi",
             "timeout": 10,
             "statusMessage": "Checking whether test results need to be recorded"
           }
@@ -35,7 +35,7 @@
           {
             "type": "command",
             "shell": "bash",
-            "command": "if command -v python3 >/dev/null 2>&1; then PY=python3; else PY=python; fi; \"$PY\" \"$CLAUDE_PROJECT_DIR/.agents/hooks/test_repair.py\" after --adapter claude",
+            "command": "if python3 -c 'import sys; sys.exit(sys.version_info < (3, 11))' </dev/null >/dev/null 2>&1; then REPAIR_PYTHON=python3; elif python -c 'import sys; sys.exit(sys.version_info < (3, 11))' </dev/null >/dev/null 2>&1; then REPAIR_PYTHON=python; else printf '%s\\n' 'test-repair: no working Python 3.11+ interpreter found (tried python3 and python). Fix Python or PATH and restart Claude Code.' >&2; exit 2; fi; if REPAIR_OUTPUT=$(\"$REPAIR_PYTHON\" \"$CLAUDE_PROJECT_DIR/.agents/hooks/test_repair.py\" after --adapter claude); then printf '%s\\n' \"$REPAIR_OUTPUT\"; else printf '%s\\n' 'test-repair POST hook failed. Check Python and the hook path.' >&2; exit 2; fi",
             "timeout": 10,
             "statusMessage": "Checking whether test results need to be recorded"
           }
