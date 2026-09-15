@@ -33,9 +33,22 @@ budget. One repair lock may be held across the whole repository, so the next
 failure cannot be started until the current one is completed or unlocked. Stop
 cleanly when the queue is empty.
 
-For an explicit target, resolve its module and exact `Class.method` before
-execution. If pending queue work exists, lock that work first; the command
-guard does not allow bypassing queued failures.
+For an explicit target, resolve its module and exact `Class.method`, then
+inspect the queue with `python .agents/hooks/test_repair.py show`. Preserve
+that target throughout the task. `lock` selects the first pending item and
+has no target selector: call it only when that item matches the supplied
+module and method, then verify the returned item and retain its ID. Resume a
+matching lock only if it belongs to this invocation. If another item or worker
+blocks the target, report the conflict; do not repair, complete, or unlock
+unrelated work.
+
+When no active or pending item exists, check the environment and run the
+supplied target once to reproduce the failure. If it fails, run `refresh`,
+inspect `show`, and acquire the matching item before editing or rerunning.
+If the matching Allure failure is absent or cannot be locked, report the
+missing evidence or queue blocker. If the run passes or is inconclusive,
+report that result without changing test code or calling `complete`. A
+successful `lock` command without a returned item does not acquire a lock.
 
 A lock older than two hours returns to pending. Never repair an item locked by
 another worker. Unlock unfinished work, including a run that was interrupted
@@ -105,6 +118,9 @@ test layers are `tests/`, `actions/`, `pages/`, `testdata/`, and `client/`.
 
 ## 5. Respect both budgets
 
+Both counters apply only to matching test runs tracked under a repair lock.
+The initial reproduction before locking consumes neither budget.
+
 - Fresh JUnit XML containing the one matching failed or errored case consumes
   one of three repair attempts.
 - Compile-only, cached, skipped, zero-test, stale, or otherwise inconclusive
@@ -122,13 +138,23 @@ reason.
 
 ## 6. Complete and verify
 
-Use `fixed` only after the hook marks the item `verified` from fresh XML:
+For a queued item owned by this invocation, choose exactly one outcome and
+run one completion command. Replace `<id>` with the ID returned by `lock`:
+
+| Outcome | Use when |
+|---|---|
+| `fixed` | The hook marked this item `verified` from fresh passing JUnit XML. |
+| `blocked` | Repair cannot continue, for example because of a product bug or an exhausted budget. |
+| `skipped` | Work on this item is intentionally deferred; the test remains unresolved. |
 
 ```powershell
-python .agents/hooks/test_repair.py complete --id <id> --outcome fixed
-python .agents/hooks/test_repair.py complete --id <id> --outcome blocked --reason "product bug: ..."
-python .agents/hooks/test_repair.py complete --id <id> --outcome skipped --reason "stop condition: ..."
+python .agents/hooks/test_repair.py complete --id <id> --outcome <outcome>
 ```
+
+For `blocked` or `skipped`, append `--reason "<actual reason>"`. These outcomes
+release the item without claiming a passing test. Without an acquired queue
+item, report the result without calling `complete`. If a run was interrupted
+before POST recorded its result, use the existing `unlock` procedure instead.
 
 The complete queue and active repair state live in
 `.agent-state/test_repair.json`. PRE/POST decisions are appended to
