@@ -18,8 +18,17 @@ Git.
 
 ## 1. Choose and lock the target
 
-When no target was supplied, refresh the Allure-backed state and lock the
-next failure:
+Inspect the queue with `python .agents/hooks/test_repair.py show`. If an
+explicit target was supplied, resume an existing item only if its module and
+method match; otherwise report the queue conflict. If this repair task
+already owns an item, including a lock handed over by the user
+or calling workflow, retain its ID, exact target, state and counters, and
+continue from that state without locking again. A matching target alone does
+not establish ownership. Never take over another worker's item; report the
+conflict when an existing lock is not assigned to this repair task.
+
+When no target was supplied and this task has no existing lock, refresh the
+Allure-backed state and lock the next failure:
 
 ```powershell
 python .agents/hooks/test_repair.py refresh
@@ -33,9 +42,27 @@ budget. One repair lock may be held across the whole repository, so the next
 failure cannot be started until the current one is completed or unlocked. Stop
 cleanly when the queue is empty.
 
-For an explicit target, resolve its module and exact `Class.method` before
-execution. If pending queue work exists, lock that work first; the command
-guard does not allow bypassing queued failures.
+For an explicit target, resolve its module and exact `Class.method` and
+preserve that target throughout the task. Unless resuming an owned item,
+call `lock` only when the first pending item matches that module and method;
+the command has no target selector. Verify the returned item and retain its
+ID. If unrelated work blocks the target, report the conflict without repairing,
+completing or unlocking that work. A successful `lock` command without a
+returned item does not acquire a lock.
+
+When no active or pending item exists, check the environment and run the
+supplied target to reproduce the failure. After an executed failure with a
+fresh matching Allure result, run `refresh`, inspect `show`, and acquire the
+matching item before changing test behavior or rerunning.
+
+If compilation, environment or reporting problems prevent matching evidence,
+follow the evidence-backed recovery in sections 2-4, then rerun the same exact
+target. Limit changes to restoring compilation, execution or reporting; do
+not change assertions or expected behavior to compensate for missing evidence.
+If the cause remains unclear, report the missing evidence as
+`NEEDS_INVESTIGATION`. Until a lock exists, these runs have no hook-tracked
+budget counts or hook-verified result. If the target passes, report the fresh
+evidence without calling `complete`.
 
 A lock older than two hours returns to pending. Never repair an item locked by
 another worker. Unlock unfinished work, including a run that was interrupted
@@ -105,6 +132,9 @@ test layers are `tests/`, `actions/`, `pages/`, `testdata/`, and `client/`.
 
 ## 5. Respect both budgets
 
+Both counters apply only to matching test runs tracked under a repair lock.
+Setup and reproduction before locking consume neither budget.
+
 - Fresh JUnit XML containing the one matching failed or errored case consumes
   one of three repair attempts.
 - Compile-only, cached, skipped, zero-test, stale, or otherwise inconclusive
@@ -122,13 +152,23 @@ reason.
 
 ## 6. Complete and verify
 
-Use `fixed` only after the hook marks the item `verified` from fresh XML:
+For a queued item owned by this repair task, choose exactly one outcome and
+run one completion command. Use the item ID acquired or handed over to this task:
+
+| Outcome | Use when |
+|---|---|
+| `fixed` | The hook marked this item `verified` from fresh passing JUnit XML. |
+| `blocked` | Repair cannot continue, for example because of a product bug or an exhausted budget. |
+| `skipped` | Work on this item is intentionally deferred; the test remains unresolved. |
 
 ```powershell
-python .agents/hooks/test_repair.py complete --id <id> --outcome fixed
-python .agents/hooks/test_repair.py complete --id <id> --outcome blocked --reason "product bug: ..."
-python .agents/hooks/test_repair.py complete --id <id> --outcome skipped --reason "stop condition: ..."
+python .agents/hooks/test_repair.py complete --id <id> --outcome <outcome>
 ```
+
+For `blocked` or `skipped`, append `--reason "<actual reason>"`. These outcomes
+release the item without claiming a passing test. Without an acquired queue
+item, report the result without calling `complete`. If a run was interrupted
+before POST recorded its result, use the existing `unlock` procedure instead.
 
 The complete queue and active repair state live in
 `.agent-state/test_repair.json`. PRE/POST decisions are appended to
