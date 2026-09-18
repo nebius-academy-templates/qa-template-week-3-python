@@ -1,7 +1,7 @@
 # Appium failure-digest hotfix
 
 Apply this compatibility patch to an existing `AI-for-Kotlin-practice`
-checkout before the mobile triage exercise. Do not clone the Kotlin repository
+checkout before the mobile triage exercise. Don't clone the Kotlin repository
 again. The patch preserves the full raw evidence and makes only the compact
 failure digest semantic and readable.
 
@@ -29,20 +29,20 @@ already present:
 git apply --reverse --check ../qa-template-week-3-python/hotfixes/appium-failure-digest-v2.patch
 ```
 
-If the reverse check succeeds, no action is required. If both checks fail, do
-not force the patch over local framework changes. Inspect the conflicting files
+If the reverse check succeeds, no action is required. If both checks fail, don't
+force the patch over local framework changes. Inspect the conflicting files
 and keep using the raw logcat, screenshot, page source, JUnit XML, and Allure
 attachments until the conflict is resolved.
 
 ## Verify
 
-Windows PowerShell:
+### Windows PowerShell
 
 ```powershell
 .\gradlew.bat :appium-tests:failureDigestTest
 ```
 
-macOS or Linux:
+### macOS or Linux
 
 ```bash
 ./gradlew :appium-tests:failureDigestTest
@@ -52,10 +52,10 @@ The task must report eight passing `FailureLogcatTest` cases.
 
 ## Included changes
 
-- replace raw 240-character Appium response truncation with a semantic error;
-- omit base64 screenshot responses from the compact digest;
-- collapse repeated element polling;
-- preserve both ends of other long log lines;
-- capture logcat before requesting the failure screenshot;
-- avoid a duplicate step screenshot when a step fails;
-- add focused formatter regression tests.
+- Replace raw 240-character Appium response truncation with a semantic error.
+- Omit base64 screenshot responses from the compact digest.
+- Collapse repeated element polling.
+- Preserve both ends of other long log lines.
+- Capture logcat before requesting the failure screenshot.
+- Avoid a duplicate step screenshot when a step fails.
+- Add focused formatter regression tests.
